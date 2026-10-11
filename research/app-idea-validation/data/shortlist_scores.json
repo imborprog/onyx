@@ -1,0 +1,72 @@
+{
+ "S1": {
+  "business": 7,
+  "marketing": 8,
+  "automation": 8,
+  "risk": 8,
+  "total": 77.0
+ },
+ "S2": {
+  "business": 4,
+  "marketing": 3,
+  "automation": 6,
+  "risk": 4,
+  "total": 42.5
+ },
+ "S3": {
+  "business": 4,
+  "marketing": 5,
+  "automation": 5,
+  "risk": 3,
+  "total": 43.0
+ },
+ "S4": {
+  "business": 3,
+  "marketing": 9,
+  "automation": 8,
+  "risk": 7,
+  "total": 65.5
+ },
+ "S5": {
+  "business": 5,
+  "marketing": 6,
+  "automation": 3,
+  "risk": 7,
+  "total": 51.5
+ },
+ "S6": {
+  "business": 5,
+  "marketing": 7,
+  "automation": 9,
+  "risk": 6,
+  "total": 67.0
+ },
+ "S7": {
+  "business": 6,
+  "marketing": 6,
+  "automation": 4,
+  "risk": 2,
+  "total": 47.0
+ },
+ "S8": {
+  "business": 4,
+  "marketing": 5,
+  "automation": 7,
+  "risk": 5,
+  "total": 52.0
+ },
+ "S9": {
+  "business": 3,
+  "marketing": 4,
+  "automation": 6,
+  "risk": 4,
+  "total": 42.0
+ },
+ "S10": {
+  "business": 2,
+  "marketing": 2,
+  "automation": 2,
+  "risk": 3,
+  "total": 22.0
+ }
+}
