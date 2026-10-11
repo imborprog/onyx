@@ -7,7 +7,8 @@ import path from "node:path";
 
 const dir = path.join(process.cwd(), "ops", "house-tests");
 const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
-const settings = (appUrl) => ({ cta: { enabled: true, label: "우리 브랜드 테스트 만들기", url: `${appUrl}/create` } });
+// Relative CTA so the link keeps working if the domain changes.
+const settings = () => ({ cta: { enabled: true, label: "우리 브랜드 테스트 만들기", url: "/create" } });
 const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 
 if (process.argv.includes("--sql")) {

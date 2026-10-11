@@ -12,16 +12,20 @@ alter default privileges in schema public grant select, insert, update, delete o
 alter default privileges in schema public grant usage, select on sequences to app_user;
 
 -- RLS is enabled on every table; only the app role gets through.
-do $$
-declare
-  t text;
-begin
-  for t in select tablename from pg_tables where schemaname = 'public' loop
-    execute format('drop policy if exists app_all on public.%I', t);
-    execute format('create policy app_all on public.%I for all to app_user using (true) with check (true)', t);
-  end loop;
-end
-$$;
+-- (Explicit statements: the Supabase MCP execute_sql hung on a dynamic DO loop here.)
+create policy app_all on public.workspaces for all to app_user using (true) with check (true);
+create policy app_all on public.tests for all to app_user using (true) with check (true);
+create policy app_all on public.events for all to app_user using (true) with check (true);
+create policy app_all on public.leads for all to app_user using (true) with check (true);
+create policy app_all on public.generation_requests for all to app_user using (true) with check (true);
+create policy app_all on public.tickets for all to app_user using (true) with check (true);
+create policy app_all on public.ticket_messages for all to app_user using (true) with check (true);
+create policy app_all on public.sales_leads for all to app_user using (true) with check (true);
+create policy app_all on public.orders for all to app_user using (true) with check (true);
+create policy app_all on public.outbox for all to app_user using (true) with check (true);
+create policy app_all on public.content_queue for all to app_user using (true) with check (true);
+create policy app_all on public.ops_log for all to app_user using (true) with check (true);
+create policy app_all on public.kv for all to app_user using (true) with check (true);
 
 revoke all on all tables in schema public from anon, authenticated;
 revoke all on all sequences in schema public from anon, authenticated;
