@@ -92,16 +92,64 @@ language sql immutable as $$
 $$;
 
 -- Mirror of PRODUCTS in src/lib/config.ts. Keep the two in sync.
-create or replace function ops.product_info(p_product text, out plan text, out days int, out amount int, out concierge boolean)
+create or replace function ops.products() returns table (id text, plan text, days int, amount int, concierge boolean)
 language sql immutable as $$
-  select v.plan, v.days, v.amount, v.concierge
-  from (values
+  values
     ('pro_month', 'pro', 30, 49000, false),
     ('pro_year', 'pro', 365, 468000, false),
     ('agency_month', 'agency', 30, 149000, false),
     ('campaign', 'pro', 30, 199000, true)
-  ) as v(id, plan, days, amount, concierge)
-  where v.id = p_product
+$$;
+
+create or replace function ops.product_info(p_product text, out plan text, out days int, out amount int, out concierge boolean)
+language sql immutable as $$
+  select p.plan, p.days, p.amount, p.concierge from ops.products() p where p.id = p_product
+$$;
+
+-- What a purchase does to a workspace's plan. Mirror of nextPlan() in src/lib/schema.ts, so a
+-- bank transfer recorded by the operator ends up exactly like the same card payment:
+--   start / extend: nothing running or the same tier, the product's days go after the expiry;
+--   pro_as_agency: pro bought while agency runs, plan stays agency and gains the agency days the
+--     purchase is worth by list price;
+--   upgrade: agency bought while pro runs, the remaining pro time becomes agency time at the
+--     cheapest pro day price, then the agency days are added.
+create or replace function ops.plan_after_purchase(
+  p_plan text, p_expires timestamptz, p_product text, p_now timestamptz,
+  out plan text, out expires_at timestamptz, out kind text, out converted_days numeric
+) language plpgsql stable as $$
+declare
+  v_p record;
+  v_active text;
+  v_agency_day numeric;
+  v_pro_day_max numeric;
+  v_pro_day_min numeric;
+begin
+  select * into v_p from ops.product_info(p_product);
+  if v_p.plan is null then raise exception 'unknown product %', p_product; end if;
+  v_active := case when p_plan <> 'free' and p_expires > p_now then p_plan else 'free' end;
+  converted_days := 0;
+  if v_active = 'free' then
+    plan := v_p.plan; expires_at := p_now + make_interval(days => v_p.days); kind := 'start';
+    return;
+  end if;
+  if v_active = v_p.plan then
+    plan := v_p.plan; expires_at := p_expires + make_interval(days => v_p.days); kind := 'extend';
+    return;
+  end if;
+  select min(x.amount::numeric / x.days) into v_agency_day from ops.products() x where x.plan = 'agency' and not x.concierge;
+  select max(x.amount::numeric / x.days), min(x.amount::numeric / x.days) into v_pro_day_max, v_pro_day_min
+    from ops.products() x where x.plan = 'pro' and not x.concierge;
+  plan := 'agency';
+  if v_active = 'agency' then
+    converted_days := least(v_p.amount, v_p.days * v_pro_day_max) / v_agency_day;
+    expires_at := p_expires + make_interval(secs => (converted_days * 86400)::double precision);
+    kind := 'pro_as_agency';
+  else
+    converted_days := (extract(epoch from p_expires - p_now) / 86400) * (v_pro_day_min / v_agency_day);
+    expires_at := p_now + make_interval(secs => (converted_days * 86400)::double precision) + make_interval(days => v_p.days);
+    kind := 'upgrade';
+  end if;
+end
 $$;
 
 -- Admin links and secret-looking hex strings must never leave through operator-written text
@@ -667,6 +715,23 @@ begin
 end
 $$;
 
+-- Owner-approved only: takes a contact off the suppression list when the person asks to receive
+-- marketing again. They still need a current opt-in on a workspace before anything is sent.
+create or replace function ops.lift_suppression(p_contact text, p_note text) returns int
+language plpgsql as $$
+declare
+  v_contact text := case when position('@' in coalesce(p_contact, '')) > 0 then ops.norm_email(p_contact) else ops.norm_phone(p_contact) end;
+  v_n int;
+begin
+  if v_contact is null then raise exception '연락처가 필요합니다'; end if;
+  if coalesce(trim(p_note), '') = '' then raise exception 'p_note에 대표 승인 근거를 적어 주세요'; end if;
+  delete from public.marketing_suppressions where contact = v_contact;
+  get diagnostics v_n = row_count;
+  perform ops.log('lift_suppression', jsonb_build_object('contact', ops.mask_contact(v_contact), 'rows', v_n, 'note', p_note));
+  return v_n;
+end
+$$;
+
 -- Free workspaces worth a nudge: only addresses that pass ops.marketing_allowed and have not
 -- had a marketing mail in the last 30 days. Same leading columns as before.
 create or replace view ops.upgrade_candidates as
@@ -702,20 +767,25 @@ order by leads desc, views desc;
 --   * a withdrawal, or an address change, cancels marketing mail still queued for the old address;
 --   * every opt-in and opt-out sends the result notice 정보통신망법 제50조 제7항 requires
 --     (sender, date, result), at most one of each kind per address per day.
--- Lives in public with invoker rights because it fires inside the app role's own statements.
+-- It fires inside the app role's own writes, so it runs with the owner's rights (fixed
+-- statements, pinned search_path; a trigger function cannot be called directly) instead of
+-- depending on the app role's grants, and a failure to queue the notice is logged as a warning
+-- rather than failing the user's request.
 create or replace function public.workspaces_marketing_consent() returns trigger
 language plpgsql
+security definer
 set search_path = pg_catalog, public
 as $$
 declare
-  v_brand text := coalesce((select value from public.kv where key = 'brand_name'), '유형공장');
-  v_url text := coalesce((select value from public.kv where key = 'app_url'), 'http://localhost:3000');
-  v_contact text := coalesce((select nullif(trim(value), '') from public.kv where key = 'sender_contact'), '');
-  v_date text := to_char(now() at time zone 'Asia/Seoul', 'YYYY"년" FMMM"월" FMDD"일"');
+  v_brand text;
+  v_url text;
+  v_contact text;
+  v_date text;
   v_old_email text;
   v_new_email text := nullif(trim(new.owner_email), '');
   v_notice text;
   v_to text;
+  v_suppressed boolean;
 begin
   if new.is_house then return null; end if;
   if tg_op = 'UPDATE' then
@@ -732,7 +802,11 @@ begin
     v_notice := 'in';
     v_to := v_new_email;
   elsif tg_op = 'UPDATE' and old.marketing_opt_in and not new.marketing_opt_in
-        and v_old_email is not null and v_new_email is not null then
+        and v_old_email is not null and v_new_email is not null
+        -- The address was replaced rather than opted out: only a notice if no consent is left for it.
+        and (lower(v_old_email) = lower(v_new_email) or not exists (
+          select 1 from public.workspaces w
+           where w.id <> new.id and lower(trim(w.owner_email)) = lower(v_old_email) and w.marketing_opt_in)) then
     v_notice := 'out';
     v_to := v_old_email;
   else
@@ -746,24 +820,42 @@ begin
     return null;
   end if;
 
-  insert into public.outbox (to_email, subject, body_text, kind, ref)
-  values (
-    v_to,
-    '[' || v_brand || '] 광고성 정보 수신 ' || case when v_notice = 'in' then '동의' else '거부' end || ' 처리 결과 안내',
-    '안녕하세요, ' || v_brand || '입니다.' || E'\n\n'
-      || case when v_notice = 'in' then
-           v_date || '에 이 이메일 주소(' || v_to || ')로 ' || v_brand || '의 새 기능·할인 소식(광고성 정보) 이메일 수신 동의가 접수됐습니다.' || E'\n\n'
-           || '- 전송자: ' || v_brand || E'\n' || '- 처리 일자: ' || v_date || E'\n' || '- 처리 결과: 수신 동의' || E'\n\n'
-           || '동의한 적이 없거나 더 이상 받고 싶지 않으시면 ' || v_url || '/support 에서 내용에 "수신거부"와 이 이메일 주소를 적어 보내 주세요. 바로 처리해 드립니다.'
-         else
-           v_date || '에 이 이메일 주소(' || v_to || ')의 광고성 정보 수신 거부(동의 철회)가 처리됐습니다. 앞으로 광고성 메일은 보내지 않습니다.' || E'\n\n'
-           || '- 전송자: ' || v_brand || E'\n' || '- 처리 일자: ' || v_date || E'\n' || '- 처리 결과: 수신 거부' || E'\n\n'
-           || '결제 영수증, 문의 답변처럼 서비스 이용에 필요한 안내는 계속 보내 드립니다.'
-         end
-      || case when v_contact <> '' then E'\n\n' || '연락처: ' || v_contact else '' end
-      || E'\n\n' || '※ 발신 전용 메일입니다.',
-    'transactional', 'consent:' || v_notice
-  );
+  begin
+    v_brand := coalesce((select value from public.kv where key = 'brand_name'), '유형공장');
+    v_url := coalesce((select value from public.kv where key = 'app_url'), 'http://localhost:3000');
+    v_contact := coalesce((select nullif(trim(value), '') from public.kv where key = 'sender_contact'), '');
+    v_date := to_char(
+      (case when v_notice = 'in' then coalesce(new.marketing_opt_in_at, now()) else now() end) at time zone 'Asia/Seoul',
+      'YYYY"년" FMMM"월" FMDD"일"');
+    -- An address that asked for 수신거부 stays suppressed (see ops.marketing_allowed); say so.
+    v_suppressed := v_notice = 'in' and exists (select 1 from public.marketing_suppressions where contact = lower(v_to));
+
+    insert into public.outbox (to_email, subject, body_text, kind, ref)
+    values (
+      v_to,
+      '[' || v_brand || '] 광고성 정보 수신 ' || case when v_notice = 'in' then '동의' else '거부' end || ' 처리 결과 안내',
+      '안녕하세요, ' || v_brand || '입니다.' || E'\n\n'
+        || case when v_suppressed then
+             v_date || '에 이 이메일 주소(' || v_to || ')로 ' || v_brand || '의 새 기능·할인 소식(광고성 정보) 수신 동의 표시가 접수됐습니다.' || E'\n'
+             || '다만 이 주소는 이전에 수신거부를 요청하셔서 광고성 메일은 계속 보내지 않습니다.' || E'\n\n'
+             || '- 전송자: ' || v_brand || E'\n' || '- 접수 일자: ' || v_date || E'\n' || '- 처리 결과: 수신거부 유지' || E'\n\n'
+             || '다시 받아 보시려면 ' || v_url || '/support 에서 "광고 메일 다시 받기"라고 요청해 주세요.'
+           when v_notice = 'in' then
+             v_date || '에 이 이메일 주소(' || v_to || ')로 ' || v_brand || '의 새 기능·할인 소식(광고성 정보) 이메일 수신 동의가 접수됐습니다.' || E'\n\n'
+             || '- 전송자: ' || v_brand || E'\n' || '- 동의 일자: ' || v_date || E'\n' || '- 처리 결과: 수신 동의' || E'\n\n'
+             || '동의한 적이 없거나 더 이상 받고 싶지 않으시면 ' || v_url || '/support 에서 내용에 "수신거부"와 이 이메일 주소를 적어 보내 주세요. 바로 처리해 드립니다.'
+           else
+             v_date || '에 이 이메일 주소(' || v_to || ')의 광고성 정보 수신 거부(동의 철회)가 처리됐습니다. 앞으로 광고성 메일은 보내지 않습니다.' || E'\n\n'
+             || '- 전송자: ' || v_brand || E'\n' || '- 처리 일자: ' || v_date || E'\n' || '- 처리 결과: 수신 거부' || E'\n\n'
+             || '결제 영수증, 문의 답변처럼 서비스 이용에 필요한 안내는 계속 보내 드립니다.'
+           end
+        || case when v_contact <> '' then E'\n\n' || '연락처: ' || v_contact else '' end
+        || E'\n\n' || '※ 발신 전용 메일입니다.',
+      'transactional', 'consent:' || v_notice
+    );
+  exception when others then
+    raise warning 'marketing consent notice for workspace % was not queued: %', new.id, sqlerrm;
+  end;
   return null;
 end
 $$;
@@ -832,55 +924,75 @@ begin
 end
 $$;
 
--- Bank-transfer purchase the owner has confirmed: records a paid order (so it shows in
--- ops.summary revenue and can be refunded with ops.refund_order) and applies the product's
--- plan and days from ops.product_info. For the campaign pass it also opens the concierge
--- sales lead, exactly like a card payment does. p_amount defaults to the list price.
-create or replace function ops.fulfill_manual_order(
-  p_workspace uuid, p_product text, p_note text, p_amount int default null, p_force boolean default false
-) returns jsonb language plpgsql as $$
+-- Bank-transfer purchase the owner has confirmed. Applies the product exactly as a card payment
+-- would (ops.plan_after_purchase), records a paid order with that plan change (so ops.summary
+-- counts the revenue and ops.refund_order can reverse it), and for the campaign pass opens the
+-- concierge sales lead like a card payment does. p_amount defaults to the list price.
+drop function if exists ops.fulfill_manual_order(uuid, text, text, int, boolean);
+create or replace function ops.fulfill_manual_order(p_workspace uuid, p_product text, p_note text, p_amount int default null)
+returns jsonb language plpgsql as $$
 declare
   v_p record;
   v_w public.workspaces;
+  v_c record;
   v_amount int;
   v_order text;
-  v_until timestamptz;
 begin
   select * into v_p from ops.product_info(p_product);
   if v_p.plan is null then raise exception '알 수 없는 상품입니다: % (pro_month, pro_year, agency_month, campaign 중 하나)', p_product; end if;
-  select * into v_w from public.workspaces where id = p_workspace;
+  if coalesce(trim(p_note), '') = '' then raise exception 'p_note에 대표의 입금 확인 내용을 적어 주세요'; end if;
+  select * into v_w from public.workspaces where id = p_workspace for update;
   if not found then raise exception 'workspace % not found', p_workspace; end if;
   if v_w.is_house then raise exception '운영용 워크스페이스에는 주문을 넣을 수 없습니다'; end if;
   v_amount := coalesce(p_amount, v_p.amount);
   if v_amount < 1 or v_amount > v_p.amount then
     raise exception '입금액은 1~%원이어야 합니다 (지금 %원)', v_p.amount, v_amount;
   end if;
-  v_until := ops.grant_plan(p_workspace, v_p.plan, v_p.days, coalesce(p_note, '') || ' (주문: ' || p_product || ')', p_force);
+  select * into v_c from ops.plan_after_purchase(v_w.plan, v_w.plan_expires_at, p_product, now());
+  update public.workspaces set plan = v_c.plan, plan_expires_at = v_c.expires_at where id = p_workspace;
   v_order := 'bank_' || to_char(now() at time zone 'Asia/Seoul', 'YYYYMMDD') || '_' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 10);
   insert into public.orders (order_id, workspace_id, product, amount, status, provider, customer_email, raw, paid_at)
   values (v_order, p_workspace, p_product, v_amount, 'paid', 'bank_transfer', v_w.owner_email,
-          jsonb_build_object('source', 'ops.fulfill_manual_order', 'note', p_note), now());
+          jsonb_build_object('source', 'ops.fulfill_manual_order', 'note', p_note,
+            'plan_change', jsonb_build_object(
+              'kind', v_c.kind, 'plan_before', v_w.plan, 'until_before', v_w.plan_expires_at,
+              'plan_after', v_c.plan, 'until_after', v_c.expires_at, 'converted_days', round(v_c.converted_days, 4))),
+          now());
   if v_p.concierge then
     insert into public.sales_leads (workspace_id, email, product, message, source, status)
     values (p_workspace, coalesce(v_w.owner_email, 'unknown@invalid'), 'campaign', '캠페인 패스 계좌이체 입금 확인 — 기획 대행 착수 필요', 'order', 'new');
   end if;
-  perform ops.log('fulfill_manual_order', jsonb_build_object('order', v_order, 'workspace', p_workspace, 'product', p_product, 'amount', v_amount));
-  return jsonb_build_object('order_id', v_order, 'product', p_product, 'amount', v_amount, 'plan', v_p.plan, 'plan_until', v_until, 'concierge', v_p.concierge);
+  perform ops.log('fulfill_manual_order', jsonb_build_object(
+    'order', v_order, 'workspace', p_workspace, 'product', p_product, 'amount', v_amount, 'note', p_note,
+    'kind', v_c.kind, 'plan_before', v_w.plan, 'until_before', v_w.plan_expires_at, 'plan_after', v_c.plan, 'until_after', v_c.expires_at));
+  return jsonb_build_object(
+    'order_id', v_order, 'product', p_product, 'amount', v_amount, 'kind', v_c.kind,
+    'plan', v_c.plan, 'plan_until', v_c.expires_at, 'converted_days', round(v_c.converted_days, 1), 'concierge', v_p.concierge);
 end
 $$;
 
 -- Owner-approved refund, after the money has been returned (Toss dashboard or bank). Marks the
--- order refunded (ops.summary stops counting it as revenue), takes back the days it added, and
--- drops the workspace to free when nothing is left. Refunding an agency order while the
--- workspace still has time left and no other agency order from the last 30 days turns the rest
--- into pro (the remaining time most likely came from pro purchases). A campaign-pass refund
--- also cancels its queued concierge work. Returns before/after so the owner can check it.
+-- order refunded (ops.summary stops counting it as revenue) and takes back what the order added:
+--   start / extend: the product's days;
+--   pro_as_agency: the agency days the pro purchase was converted into;
+--   upgrade: the agency days, then the agency time left over (converted pro time) goes back to
+--     pro at the same price ratio.
+-- The kind comes from the order's raw.plan_change (written by ops.fulfill_manual_order). Card
+-- orders without that record are inferred from the current tier, and the result says so.
+-- Nothing left means free. A campaign-pass refund also cancels its queued concierge work.
+-- Returns before/after so the owner can check it.
 create or replace function ops.refund_order(p_order_id text, p_reason text) returns jsonb
 language plpgsql as $$
 declare
   v_o public.orders;
   v_p record;
   v_w public.workspaces;
+  v_kind text;
+  v_inferred boolean := false;
+  v_days numeric;
+  v_agency_day numeric;
+  v_pro_day_max numeric;
+  v_pro_day_min numeric;
   v_until timestamptz;
   v_plan text;
   v_note text;
@@ -894,22 +1006,52 @@ begin
   select * into v_p from ops.product_info(v_o.product);
   if v_p.plan is null then raise exception 'unknown product %', v_o.product; end if;
   select * into v_w from public.workspaces where id = v_o.workspace_id for update;
+  select min(x.amount::numeric / x.days) into v_agency_day from ops.products() x where x.plan = 'agency' and not x.concierge;
+  select max(x.amount::numeric / x.days), min(x.amount::numeric / x.days) into v_pro_day_max, v_pro_day_min
+    from ops.products() x where x.plan = 'pro' and not x.concierge;
 
   update public.orders set status = 'refunded', refunded_at = now(), refund_note = p_reason where id = v_o.id;
 
-  v_until := v_w.plan_expires_at - make_interval(days => v_p.days);
-  if v_w.plan = 'free' or v_w.plan_expires_at is null or v_until <= now() then
+  v_kind := v_o.raw -> 'plan_change' ->> 'kind';
+  v_days := (v_o.raw -> 'plan_change' ->> 'converted_days')::numeric;
+  if v_kind is null then
+    v_inferred := true;
+    v_kind := case
+      when v_p.plan = 'pro' and v_w.plan = 'agency' then 'pro_as_agency'
+      when v_p.plan = 'agency' and v_w.plan = 'agency'
+           and exists (select 1 from public.orders o
+                        where o.workspace_id = v_w.id and o.status = 'paid' and o.product <> 'agency_month'
+                          and o.paid_at < v_o.paid_at)
+           and not exists (select 1 from public.orders o
+                            where o.workspace_id = v_w.id and o.id <> v_o.id and o.status = 'paid'
+                              and o.product = 'agency_month' and o.paid_at > now() - interval '30 days')
+        then 'upgrade'
+      else 'extend'
+    end;
+    v_note := '카드 결제 주문이라 플랜 변경 기록이 없어 현재 플랜으로 추정해 되돌렸습니다(' || v_kind || '). before/after를 대표에게 보고하고, 틀렸다면 대표 확인 후 grant_plan으로 바로잡으세요';
+  end if;
+
+  if v_w.plan = 'free' or v_w.plan_expires_at is null or v_w.plan_expires_at <= now() then
     v_plan := 'free';
     v_until := null;
-  elsif v_w.plan = 'agency' and v_p.plan = 'agency' and not exists (
-    select 1 from public.orders o
-     where o.workspace_id = v_w.id and o.id <> v_o.id and o.status = 'paid'
-       and o.product = 'agency_month' and o.paid_at > now() - interval '30 days'
-  ) then
-    v_plan := 'pro';
-    v_note := '대행사 결제를 환불해 남은 기간을 프로로 바꿨습니다. 다른 대행사 이용권(장애 보상 등)이 남아 있었다면 대표 확인 후 grant_plan(..., p_force => true)로 바로잡으세요';
   else
     v_plan := v_w.plan;
+    if v_kind = 'pro_as_agency' then
+      v_days := coalesce(v_days, least(v_p.amount, v_p.days * v_pro_day_max) / v_agency_day);
+      v_until := v_w.plan_expires_at - make_interval(secs => (v_days * 86400)::double precision);
+    elsif v_kind = 'upgrade' then
+      v_until := v_w.plan_expires_at - make_interval(days => v_p.days);
+      v_plan := 'pro';
+      if v_until > now() then
+        v_until := now() + (v_until - now()) / (v_pro_day_min / v_agency_day)::double precision;
+      end if;
+    else
+      v_until := v_w.plan_expires_at - make_interval(days => v_p.days);
+    end if;
+    if v_until <= now() then
+      v_plan := 'free';
+      v_until := null;
+    end if;
   end if;
   update public.workspaces set plan = v_plan, plan_expires_at = v_until where id = v_w.id;
 
@@ -923,10 +1065,10 @@ begin
   end if;
 
   perform ops.log('refund_order', jsonb_build_object(
-    'order', v_o.order_id, 'product', v_o.product, 'amount', v_o.amount, 'reason', p_reason,
+    'order', v_o.order_id, 'product', v_o.product, 'amount', v_o.amount, 'reason', p_reason, 'kind', v_kind, 'inferred', v_inferred,
     'plan_before', v_w.plan, 'until_before', v_w.plan_expires_at, 'plan_after', v_plan, 'until_after', v_until));
   return jsonb_build_object(
-    'order_id', v_o.order_id, 'product', v_o.product, 'amount', v_o.amount,
+    'order_id', v_o.order_id, 'product', v_o.product, 'amount', v_o.amount, 'kind', v_kind, 'inferred', v_inferred,
     'plan_before', v_w.plan, 'until_before', v_w.plan_expires_at,
     'plan_after', v_plan, 'until_after', v_until,
     'concierge_requests_cancelled', v_cancelled, 'note', v_note);

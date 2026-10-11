@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PRODUCTS, type Plan, type Product } from "./config";
 
 // ---------------------------------------------------------------- test content
 
@@ -113,9 +114,82 @@ export const SettingsSchema = z.object({
 
 export type Settings = z.infer<typeof SettingsSchema>;
 
+/**
+ * Parses stored settings one section at a time, so one bad field (say an operator-written
+ * '#f60' accent) resets only its own section to the defaults instead of switching off the
+ * lead form and coupon along with it.
+ */
 export function parseSettings(raw: unknown): Settings {
-  const res = SettingsSchema.safeParse(raw ?? {});
-  return res.success ? res.data : SettingsSchema.parse({});
+  const obj: Record<string, unknown> = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const shape = SettingsSchema.shape;
+  function section<K extends keyof Settings>(key: K, schema: z.ZodType<Settings[K], z.ZodTypeDef, unknown>): Settings[K] {
+    const res = schema.safeParse(obj[key]);
+    if (res.success) return res.data;
+    const issue = res.error.issues[0];
+    console.warn(`settings.${key} is invalid (${issue ? `${[key, ...issue.path].join(".")}: ${issue.message}` : "unknown"}); using defaults for this section`);
+    return schema.parse(undefined);
+  }
+  return {
+    brandName: section("brandName", shape.brandName),
+    theme: section("theme", shape.theme),
+    lead: section("lead", shape.lead),
+    coupon: section("coupon", shape.coupon),
+    cta: section("cta", shape.cta),
+  };
+}
+
+// ---------------------------------------------------------------- plan purchases
+
+export type PaidPlan = Exclude<Plan, "free">;
+
+export interface PlanState {
+  plan: Plan;
+  expiresAt: Date | null;
+}
+
+export interface PlanChange {
+  plan: PaidPlan;
+  expiresAt: Date;
+  /** start: nothing was running. extend: same tier. pro_as_agency: pro bought during agency. upgrade: agency bought during pro. */
+  kind: "start" | "extend" | "pro_as_agency" | "upgrade";
+  /** Agency days that pro time was converted into (the purchase for pro_as_agency, the remaining pro time for upgrade). */
+  convertedDays: number;
+}
+
+const DAY_MS = 86_400_000;
+
+function dayPrices(plan: PaidPlan): number[] {
+  return Object.values(PRODUCTS)
+    .filter((p) => p.plan === plan && !p.concierge)
+    .map((p) => p.amount / p.days);
+}
+
+/**
+ * What a purchase does to a workspace's plan. A workspace has one plan and one expiry, so
+ * time is never moved between tiers 1:1; it is converted by list price instead:
+ *  - nothing running, or the same tier: the product's days are added after the current expiry;
+ *  - pro bought while agency runs: the plan stays agency and gains the agency days the pro
+ *    purchase is worth (its price, capped at the monthly pro price for the days so a campaign
+ *    pass's concierge share is not converted, divided by the agency day price);
+ *  - agency bought while pro runs: the remaining pro time becomes agency time at the cheapest
+ *    pro day price (the yearly pass; what was paid for it is unknown), then the agency days are added.
+ * So agency time is never sold at the pro price and remaining pro time never becomes agency for free.
+ */
+export function nextPlan(current: PlanState, product: Product, now: Date): PlanChange {
+  const nowMs = now.getTime();
+  const currentEnd = current.expiresAt ? new Date(current.expiresAt).getTime() : 0;
+  const active: Plan = current.plan !== "free" && currentEnd > nowMs ? current.plan : "free";
+  const productMs = product.days * DAY_MS;
+  if (active === "free") return { plan: product.plan, expiresAt: new Date(nowMs + productMs), kind: "start", convertedDays: 0 };
+  if (active === product.plan) return { plan: product.plan, expiresAt: new Date(currentEnd + productMs), kind: "extend", convertedDays: 0 };
+  const agencyDay = Math.min(...dayPrices("agency"));
+  if (active === "agency") {
+    const proValue = Math.min(product.amount, product.days * Math.max(...dayPrices("pro")));
+    const days = proValue / agencyDay;
+    return { plan: "agency", expiresAt: new Date(currentEnd + days * DAY_MS), kind: "pro_as_agency", convertedDays: days };
+  }
+  const days = ((currentEnd - nowMs) / DAY_MS) * (Math.min(...dayPrices("pro")) / agencyDay);
+  return { plan: "agency", expiresAt: new Date(nowMs + days * DAY_MS + productMs), kind: "upgrade", convertedDays: days };
 }
 
 // ---------------------------------------------------------------- brief (create form)
