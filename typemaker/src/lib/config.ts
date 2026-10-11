@@ -30,6 +30,65 @@ export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
 
 export const FREE_GENERATIONS_PER_IP_PER_DAY = 5;
 
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/** Abuse limits on the anonymous endpoints, enforced in src/lib/limits.ts. Plan limits above are product limits and are not scaled. */
+export interface AbuseLimits {
+  generationsPerIpPerDay: number;
+  conciergePerIpPerDay: number;
+  supportAiPerIpPerDay: number;
+  ticketsPerIpPerHour: number;
+  ticketsPerIpPerDay: number;
+  customerMessagesPerTicketPerDay: number;
+  salesPerIpPerHour: number;
+  salesPerIpPerDay: number;
+  /** Auto-acknowledgement mail: only the first N submissions per IP per day get one. */
+  acksPerIpPerDay: number;
+  /** Auto-acknowledgement mail: at most N per recipient address per day, support and sales combined. */
+  acksPerRecipientPerDay: number;
+  eventsPerIpPerHour: number;
+  eventsPerSessionTypePerHour: number;
+  leadsPerIpPerTestPerHour: number;
+  leadsPerIpPerDay: number;
+  leadsPerSessionPerTestPerDay: number;
+}
+
+/**
+ * Sized so real traffic (including a shared office or carrier NAT address) never hits them.
+ * RATE_LIMIT_SCALE multiplies all of them, e.g. RATE_LIMIT_SCALE=100 for repeated local e2e runs.
+ */
+export function abuseLimits(): AbuseLimits {
+  const scale = envNumber("RATE_LIMIT_SCALE", 1);
+  const n = (base: number) => Math.max(1, Math.round(base * scale));
+  return {
+    generationsPerIpPerDay: n(FREE_GENERATIONS_PER_IP_PER_DAY),
+    conciergePerIpPerDay: n(2),
+    supportAiPerIpPerDay: n(5),
+    ticketsPerIpPerHour: n(10),
+    ticketsPerIpPerDay: n(30),
+    customerMessagesPerTicketPerDay: n(20),
+    salesPerIpPerHour: n(5),
+    salesPerIpPerDay: n(20),
+    acksPerIpPerDay: n(5),
+    acksPerRecipientPerDay: n(2),
+    eventsPerIpPerHour: n(1200),
+    eventsPerSessionTypePerHour: n(10),
+    leadsPerIpPerTestPerHour: n(10),
+    leadsPerIpPerDay: n(60),
+    leadsPerSessionPerTestPerDay: n(3),
+  };
+}
+
+/** Paid model calls allowed per 24 hours across the whole service. kv 'ai_daily_cap' overrides it at runtime (see limits.ts). */
+export function aiDailyCapDefault(): number {
+  return Math.floor(envNumber("AI_DAILY_CAP", 300));
+}
+
 export type ProductId = "pro_month" | "pro_year" | "agency_month" | "campaign";
 
 export interface Product {
@@ -93,6 +152,21 @@ export function appUrl(): string {
   return "http://localhost:3000";
 }
 
+export function isProduction(): boolean {
+  return Boolean(process.env.VERCEL) || process.env.NODE_ENV === "production";
+}
+
+const DEV_IP_SALT = "typemaker-dev-salt";
+
+/** Key for the IP HMAC. The dev fallback is public, so production refuses to run without a real one. */
+function ipSalt(): string {
+  const salt = (process.env.IP_HASH_SALT ?? "").trim();
+  if (isProduction() && (!salt || salt === DEV_IP_SALT)) {
+    throw new Error("IP_HASH_SALT is missing or still the public development value. Set it to a long random string (e.g. `openssl rand -hex 32`) before running in production.");
+  }
+  return salt || DEV_IP_SALT;
+}
+
 export const ENV = {
   anthropicKey: () => process.env.ANTHROPIC_API_KEY ?? "",
   tossClientKey: () => process.env.NEXT_PUBLIC_TOSS_CLIENT_KEY ?? "",
@@ -101,7 +175,7 @@ export const ENV = {
   emailFrom: () => process.env.EMAIL_FROM ?? "",
   kakaoJsKey: () => process.env.NEXT_PUBLIC_KAKAO_JS_KEY ?? "",
   cronSecret: () => process.env.CRON_SECRET ?? "",
-  ipSalt: () => process.env.IP_HASH_SALT ?? "typemaker-dev-salt",
+  ipSalt,
 } as const;
 
 export function aiEnabled(): boolean {

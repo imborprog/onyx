@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { emailSchema, jsonError, readBody } from "@/lib/http";
-import { getPublicTest, insertEvent, insertLead } from "@/lib/repo";
+import { couponCodeFor, emailSchema, ipHash, jsonError, readBody } from "@/lib/http";
+import { insertLeadLimited } from "@/lib/limits";
+import { getPublicTest } from "@/lib/repo";
 
 export const runtime = "nodejs";
 
@@ -15,6 +16,7 @@ const Body = z.object({
   ageOver14: z.literal(true, { errorMap: () => ({ message: "만 14세 이상만 참여할 수 있어요" }) }),
   consentMarketing: z.boolean().default(false),
   consentNight: z.boolean().default(false),
+  sessionId: z.string().max(40).nullable().optional(),
 });
 
 export async function POST(req: Request) {
@@ -23,12 +25,13 @@ export async function POST(req: Request) {
   const b = body.data;
   const pt = await getPublicTest(b.slug);
   if (!pt || !pt.test.settings.lead.enabled) return jsonError(404, "참여할 수 없는 테스트예요");
-  const fields = pt.test.settings.lead.fields;
+  const { lead, coupon } = pt.test.settings;
+  const fields = lead.fields;
   if (fields.includes("name") && !b.name) return jsonError(400, "이름을 입력해 주세요");
   if (fields.includes("phone") && !b.phone) return jsonError(400, "연락처를 입력해 주세요");
   if (fields.includes("email") && !b.email) return jsonError(400, "이메일을 입력해 주세요");
   const resultKey = b.resultKey && pt.test.content.results.some((r) => r.key === b.resultKey) ? b.resultKey : null;
-  await insertLead({
+  const saved = await insertLeadLimited({
     testId: pt.test.id,
     workspaceId: pt.test.workspace_id,
     resultKey,
@@ -37,8 +40,16 @@ export async function POST(req: Request) {
     email: fields.includes("email") ? b.email : null,
     consentMarketing: b.consentMarketing,
     consentNight: b.consentMarketing && b.consentNight,
-    retentionDays: pt.test.settings.lead.retentionDays,
+    retentionDays: lead.retentionDays,
+    sessionId: b.sessionId ?? null,
+    ipHash: ipHash(req),
   });
-  await insertEvent({ testId: pt.test.id, type: "lead_submit", resultKey });
-  return NextResponse.json({ ok: true });
+  if (!saved.ok) {
+    return jsonError(
+      429,
+      saved.reason === "session" ? "이 브라우저에서는 오늘 더 참여할 수 없어요. 내일 다시 참여해 주세요." : "같은 네트워크에서 참여가 너무 많아요. 잠시 후 다시 시도해 주세요.",
+    );
+  }
+  // The coupon (if any) is released only here, after the lead is stored, so gated codes never reach the page source.
+  return NextResponse.json({ ok: true, coupon: coupon.enabled ? couponCodeFor(coupon, resultKey) : null });
 }

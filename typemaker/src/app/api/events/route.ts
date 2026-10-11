@@ -1,7 +1,9 @@
 import { after, NextResponse } from "next/server";
 import { z } from "zod";
 import { maybeFlushOutbox } from "@/lib/email";
-import { EVENT_TYPES, insertEvent, testIdForSlug } from "@/lib/repo";
+import { ipHash } from "@/lib/http";
+import { insertEventLimited } from "@/lib/limits";
+import { EVENT_TYPES, testIdForSlug } from "@/lib/repo";
 
 export const runtime = "nodejs";
 
@@ -27,7 +29,16 @@ export async function POST(req: Request) {
   if (!parsed.success) return NextResponse.json({ ok: false }, { status: 400 });
   const testId = await testIdForSlug(parsed.data.slug);
   if (!testId) return NextResponse.json({ ok: false }, { status: 404 });
-  await insertEvent({ testId, type: parsed.data.type, resultKey: parsed.data.resultKey, channel: parsed.data.channel, sessionId: parsed.data.sessionId });
+  // Over-limit events are dropped silently, like bot traffic, so the response gives a flooder nothing to tune against.
+  const recorded = await insertEventLimited({
+    testId,
+    type: parsed.data.type,
+    resultKey: parsed.data.resultKey,
+    channel: parsed.data.channel,
+    sessionId: parsed.data.sessionId,
+    ipHash: ipHash(req),
+  });
+  if (!recorded) return NextResponse.json({ ok: true });
   after(async () => {
     try {
       await maybeFlushOutbox();

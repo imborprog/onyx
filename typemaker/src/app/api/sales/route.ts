@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { appUrl, BRAND } from "@/lib/config";
-import { emailSchema, readBody } from "@/lib/http";
-import { createSalesLead, enqueueEmail, getWorkspaceBySecret } from "@/lib/repo";
+import { emailSchema, ipHash, jsonError, readBody } from "@/lib/http";
+import { createSalesLeadLimited } from "@/lib/limits";
+import { getWorkspaceBySecret } from "@/lib/repo";
 
 export const runtime = "nodejs";
 
@@ -22,7 +23,8 @@ export async function POST(req: Request) {
   if (!body.ok) return body.res;
   const b = body.data;
   const ws = await getWorkspaceBySecret(req.headers.get("x-workspace"));
-  await createSalesLead({
+  // The address is unverified, so the acknowledgement is a fixed text: no name or company from the form.
+  const lead = await createSalesLeadLimited({
     workspaceId: ws?.id ?? null,
     name: b.name || null,
     company: b.company || null,
@@ -31,12 +33,12 @@ export async function POST(req: Request) {
     product: b.product || null,
     message: b.message || null,
     source: b.source,
+    ipHash: ipHash(req),
+    ack: {
+      subject: `[${BRAND.name}] 문의 주셔서 고맙습니다`,
+      body: `문의를 잘 받았어요. 담당자가 1영업일 안에 이 주소로 안내드릴게요.\n\n그동안 무료로 먼저 만들어 보셔도 좋아요: ${appUrl()}/create`,
+    },
   });
-  await enqueueEmail({
-    to: b.email,
-    subject: `[${BRAND.name}] 문의 주셔서 고맙습니다`,
-    body: `${b.company ? `${b.company} ` : ""}${b.name ? `${b.name}님, ` : ""}문의를 잘 받았어요. 담당자가 1영업일 안에 이 주소로 안내드릴게요.\n\n그동안 무료로 먼저 만들어 보셔도 좋아요: ${appUrl()}/create`,
-    kind: "sales",
-  });
+  if (!lead.ok) return jsonError(429, "짧은 시간에 문의가 너무 많이 접수됐어요. 잠시 후 다시 시도해 주세요.");
   return NextResponse.json({ ok: true });
 }
