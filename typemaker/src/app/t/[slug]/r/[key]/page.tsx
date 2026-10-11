@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { AccentLinkButton, ResultHero } from "@/components/Player";
 import { appUrl, BRAND, PLAN_LIMITS } from "@/lib/config";
 import { getPublicTest } from "@/lib/repo";
 
@@ -31,21 +32,17 @@ export default async function SharedResultPage({ params }: Params) {
   const c = pt.test.content;
   const r = c.results.find((x) => x.key === key);
   if (!r) notFound();
-  const accent = pt.test.settings.theme.accent;
+  const { accent, style } = pt.test.settings.theme;
+  const night = style === "night";
   return (
-    <div className="player">
+    <div className={night ? "player theme-night" : style === "calm" ? "player theme-calm" : "player"} style={night ? { background: "#12131f" } : undefined}>
       <div className="narrow" style={{ maxWidth: 560 }}>
         <div className="player-card">
           <p className="center small muted">친구의 결과</p>
-          <div className="result-hero" style={{ background: r.color }}>
-            {r.emoji ? <span className="emoji" aria-hidden="true">{r.emoji}</span> : null}
-            <h2>{r.name}</h2>
-            {r.tagline ? <p style={{ fontWeight: 600 }}>{r.tagline}</p> : null}
-            {r.traits.length ? <div className="traits">{r.traits.map((t) => <span key={t}>#{t}</span>)}</div> : null}
-          </div>
+          <ResultHero result={r} />
           <h1 className="q-text center">{c.title}</h1>
           <p className="center muted">나는 어떤 유형일까? {c.questions.length}문항이면 알 수 있어요.</p>
-          <Link href={`/t/${slug}`} className="btn btn-primary btn-block" style={{ background: accent }}>나도 테스트하기</Link>
+          <AccentLinkButton href={`/t/${slug}`} accent={accent}>나도 테스트하기</AccentLinkButton>
           {PLAN_LIMITS[pt.plan].watermark || pt.isHouse ? (
             <Link className="watermark" href={`/create?ref=${slug}`}>{BRAND.name}에서 만든 테스트예요 · <b>나도 만들기 →</b></Link>
           ) : null}

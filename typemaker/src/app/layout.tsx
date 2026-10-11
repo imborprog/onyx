@@ -11,9 +11,15 @@ export const metadata: Metadata = {
   title: { default: `${BRAND.name} — AI 브랜드 심리테스트 메이커`, template: `%s | ${BRAND.name}` },
   description: "주제만 입력하면 AI가 공유하고 싶은 심리테스트를 만들어 드려요. 결과 공유, 리드 수집, 쿠폰 발급까지 한 번에.",
   openGraph: { siteName: BRAND.name, locale: "ko_KR", type: "website" },
+  // Dashboard URLs carry the workspace secret; never send more than the origin to other sites.
+  referrer: "strict-origin-when-cross-origin",
 };
 
 export const viewport: Viewport = { themeColor: "#f4f6fb", width: "device-width", initialScale: 1 };
+
+function seoulYear(): string {
+  return new Date().toLocaleString("en-US", { timeZone: "Asia/Seoul", year: "numeric" });
+}
 
 function Footer() {
   const b = BUSINESS;
@@ -28,6 +34,12 @@ function Footer() {
   return (
     <footer className="site-footer">
       <div className="container">
+        <nav className="footer-nav" aria-label="바로가기">
+          <Link href="/my">내 테스트</Link>
+          <Link href="/gallery">갤러리</Link>
+          <Link href="/pricing">요금</Link>
+          <Link href="/create">테스트 만들기</Link>
+        </nav>
         <div className="row">
           <Link href="/legal/terms">이용약관</Link>
           <Link href="/legal/privacy"><b>개인정보처리방침</b></Link>
@@ -36,7 +48,7 @@ function Footer() {
         </div>
         {bizLine.length > 0 ? <p>{bizLine.join(" · ")}</p> : <p>사업자 정보 준비 중</p>}
         {BRAND.supportEmail ? <p>이메일 {BRAND.supportEmail}</p> : null}
-        <p>© {new Date().getFullYear()} {BRAND.name}</p>
+        <p>© {seoulYear()} {BRAND.name}</p>
       </div>
     </footer>
   );
@@ -57,9 +69,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </Link>
             <nav className="nav" aria-label="주요 메뉴">
               <Link href="/gallery" className="hide-sm">갤러리</Link>
-              <Link href="/pricing">요금</Link>
-              <Link href="/my" className="hide-sm">내 테스트</Link>
-              <Link href="/create" className="btn btn-primary btn-sm" style={{ color: "#fff" }}>무료로 만들기</Link>
+              <Link href="/pricing" className="hide-xs">요금</Link>
+              <Link href="/my">내 테스트</Link>
+              <Link href="/create" className="btn btn-primary btn-sm" style={{ color: "#fff" }}><span className="hide-xs">무료로 </span>만들기</Link>
             </nav>
           </div>
         </header>

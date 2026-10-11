@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ZodIssue } from "zod";
 import { api } from "@/lib/client";
 import type { Plan } from "@/lib/config";
 import { SettingsSchema, TestContentSchema, type Settings, type TestContent } from "@/lib/schema";
 import { resultReach } from "@/lib/scoring";
 import type { TestStats } from "@/lib/repo";
+import Player, { type PublicSettings } from "./Player";
 import { CopyButton } from "./WorkspaceBits";
 
 type Status = "draft" | "published" | "archived";
@@ -31,6 +33,10 @@ interface Props {
   initialSettings: Settings;
   plan: Plan;
   watermark: boolean;
+  /** House (operator) workspace: its tests always carry the watermark, like the public page. */
+  isHouse: boolean;
+  /** Service name, shown in the preview's watermark. */
+  brandName: string;
   stats: TestStats;
   leads: LeadView[];
   leadsHidden: number;
@@ -46,10 +52,144 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "share", label: "공유" },
 ];
 
-function nextKey(results: TestContent["results"]): string {
-  let i = results.length + 1;
+type ResultItem = TestContent["results"][number];
+
+/**
+ * A key no result has ever used. Stored events, leads and coupon codes refer to results by key,
+ * so a new result must not inherit a deleted one's key (and with it that result's history).
+ */
+function nextKey(results: ResultItem[], used: Iterable<string>): string {
+  let max = 0;
+  for (const k of [...results.map((r) => r.key), ...used]) {
+    const m = /^r(\d+)$/.exec(k);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  let i = max + 1;
   while (results.some((r) => r.key === `r${i}`)) i++;
   return `r${i}`;
+}
+
+function ownCode(per: Record<string, string>, key: string): string {
+  return Object.hasOwn(per, key) ? (per[key] ?? "") : "";
+}
+
+function parseTraits(raw: string): string[] {
+  const list = raw.split(/[,，]/).map((x) => x.trim().slice(0, 40)).filter(Boolean);
+  return [...new Set(list)].slice(0, 6);
+}
+
+/** Keeps what the owner types (commas, trailing spaces) and only tidies the text when the field loses focus. */
+function TraitsInput({ id, traits, onChange }: { id: string; traits: string[]; onChange: (traits: string[]) => void }) {
+  const [raw, setRaw] = useState(() => traits.join(", "));
+  return (
+    <input id={id} aria-label="특징 키워드" className="input" placeholder="특징 키워드 (쉼표로 구분, 최대 6개)" value={raw} maxLength={300}
+      onChange={(e) => { setRaw(e.target.value); onChange(parseTraits(e.target.value)); }}
+      onBlur={() => setRaw(parseTraits(raw).join(", "))} />
+  );
+}
+
+// ---------------------------------------------------------------- validation messages
+
+interface Problem {
+  tab: Tab;
+  text: string;
+  /** id of the input to focus. */
+  field?: string;
+}
+
+function tooLong(issue: ZodIssue): number | null {
+  return issue.code === "too_big" && typeof issue.maximum === "number" ? issue.maximum : null;
+}
+
+/** A Korean message that says which field is wrong, for zod issues on the test content. */
+function contentProblem(issue: ZodIssue, c: TestContent): Problem {
+  const [k0, i1, k2, i3, k4] = issue.path;
+  const max = tooLong(issue);
+  const p = (text: string, field?: string): Problem => ({ tab: "content", text, field });
+  if (k0 === "title") return p(max ? `제목은 ${max}자까지 쓸 수 있어요.` : "제목을 입력해 주세요.", "t-title");
+  if (k0 === "subtitle") return p(`부제는 ${max ?? 120}자까지 쓸 수 있어요.`, "t-sub");
+  if (k0 === "intro") return p(`시작 화면 안내는 ${max ?? 400}자까지 쓸 수 있어요.`, "t-intro");
+  if (k0 === "questions" && typeof i1 === "number") {
+    const q = `Q${i1 + 1}`;
+    if (k2 === "text") return p(max ? `${q} 질문은 ${max}자까지 쓸 수 있어요.` : `${q} 질문 문구가 비어 있어요.`, `q-${i1}-text`);
+    if (k2 === "options" && typeof i3 === "number") {
+      const field = `q-${i1}-o-${i3}`;
+      if (k4 === "text") return p(max ? `${q}의 보기 ${i3 + 1} 문구는 ${max}자까지 쓸 수 있어요.` : `${q}의 보기 ${i3 + 1} 문구가 비어 있어요.`, field);
+      return p(`${q}의 보기 ${i3 + 1} 점수 설정을 확인해 주세요.`, field);
+    }
+    if (k2 === "options") return p(`${q}에는 보기가 2~4개 있어야 해요.`, `q-${i1}-text`);
+    return p(`${q} 내용을 확인해 주세요.`, `q-${i1}-text`);
+  }
+  if (k0 === "questions") return p("질문은 3~15개여야 해요.");
+  if (k0 === "results" && typeof i1 === "number") {
+    const r = c.results[i1];
+    const who = r?.name.trim() ? `「${r.name.trim()}」 결과` : `${i1 + 1}번째 결과 유형`;
+    if (k2 === "name") return p(max ? `${who} 이름은 ${max}자까지 쓸 수 있어요.` : `${i1 + 1}번째 결과 유형의 이름을 입력해 주세요.`, `r-${i1}-name`);
+    if (k2 === "emoji") return p(`${who}의 이모지는 ${max ?? 8}자까지 넣을 수 있어요.`, `r-${i1}-emoji`);
+    if (k2 === "tagline") return p(`${who}의 한 줄 요약은 ${max ?? 100}자까지 쓸 수 있어요.`, `r-${i1}-tagline`);
+    if (k2 === "description") return p(`${who}의 설명은 ${max ?? 900}자까지 쓸 수 있어요.`, `r-${i1}-desc`);
+    if (k2 === "traits") return p(`${who}의 특징 키워드는 6개까지, 하나에 40자까지 쓸 수 있어요.`, `r-${i1}-traits`);
+    if (k2 === "color") return p(`${who}의 색을 다시 골라 주세요.`, `r-${i1}-name`);
+    return p(`${who} 내용을 확인해 주세요.`, `r-${i1}-name`);
+  }
+  if (k0 === "results") return p("결과 유형은 2~12개여야 해요.");
+  return p("질문·결과 내용을 확인해 주세요.");
+}
+
+const SETTING_FIELDS: Record<string, { id: string; label: string }> = {
+  brandName: { id: "s-brand", label: "브랜드 이름" },
+  "lead.headline": { id: "l-head", label: "폼 제목" },
+  "lead.purpose": { id: "l-purpose", label: "수집 목적" },
+  "coupon.title": { id: "c-title", label: "쿠폰 이름" },
+  "coupon.code": { id: "c-code", label: "기본 코드" },
+  "coupon.note": { id: "c-note", label: "사용 안내" },
+  "cta.label": { id: "cta-l", label: "버튼 문구" },
+  "cta.url": { id: "cta-u", label: "버튼 링크" },
+};
+
+function settingsProblem(issue: ZodIssue, c: TestContent): Problem {
+  const max = tooLong(issue);
+  if (issue.path[0] === "coupon" && issue.path[1] === "perResult" && typeof issue.path[2] === "string") {
+    const key = issue.path[2];
+    const name = c.results.find((r) => r.key === key)?.name ?? "결과";
+    return { tab: "settings", text: `「${name}」 쿠폰 코드는 ${max ?? 40}자까지 쓸 수 있어요.`, field: `c-per-${key}` };
+  }
+  const f = SETTING_FIELDS[issue.path.join(".")];
+  if (!f) return { tab: "settings", text: "리드·쿠폰·디자인 설정을 확인해 주세요." };
+  return { tab: "settings", text: max ? `${f.label} 칸은 ${max}자까지 쓸 수 있어요.` : `${f.label} 칸을 확인해 주세요.`, field: f.id };
+}
+
+/** Checks the schema can't express (or words badly), in the order the owner sees the fields. */
+function extraProblem(c: TestContent, s: Settings): Problem | null {
+  const reach = resultReach(c);
+  const ri = c.results.findIndex((r) => !reach[r.key]);
+  const unreachable = c.results[ri];
+  if (unreachable) {
+    return { tab: "content", text: `「${unreachable.name || `${ri + 1}번째 결과`}」 결과가 나올 수 있는 보기가 없어요. 질문의 보기 중 하나가 이 결과에 점수를 주도록 바꿔 주세요.`, field: `r-${ri}-name` };
+  }
+  if (s.lead.enabled && !s.lead.purpose.trim()) return { tab: "settings", text: "수집 목적을 적어 주세요. 참여자 동의 문구에 그대로 표시돼요.", field: "l-purpose" };
+  if (s.cta.enabled && !s.cta.label.trim()) return { tab: "settings", text: "버튼 문구를 입력해 주세요.", field: "cta-l" };
+  if (s.cta.enabled && !/^https?:\/\/\S+$/.test(s.cta.url.trim())) return { tab: "settings", text: "버튼 링크는 https:// 로 시작하는 주소로 넣어 주세요.", field: "cta-u" };
+  return null;
+}
+
+/** Drops codes of results that no longer exist and blank entries, so deleted results leave nothing behind. */
+function cleanSettings(s: Settings, c: TestContent): Settings {
+  const keys = new Set(c.results.map((r) => r.key));
+  const perResult = Object.fromEntries(Object.entries(s.coupon.perResult).map(([k, v]) => [k, v.trim()] as const).filter(([k, v]) => keys.has(k) && v));
+  return { ...s, cta: { ...s.cta, url: s.cta.url.trim() }, coupon: { ...s.coupon, code: s.coupon.code.trim(), perResult } };
+}
+
+function focusField(id: string | undefined) {
+  if (!id) return;
+  window.setTimeout(() => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const details = el.closest("details");
+    if (details && !details.open) details.open = true;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.focus({ preventScroll: true });
+  }, 30);
 }
 
 export default function Editor(p: Props) {
@@ -60,37 +200,95 @@ export default function Editor(p: Props) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [previewRun, setPreviewRun] = useState(0);
+  const closePreview = useCallback(() => setPreviewRun(0), []);
+  // Bumped on every edit; a save only clears `dirty` if nothing changed while its request was in flight.
+  const editVersion = useRef(0);
+  // Keys that stored stats, leads or coupon codes refer to, plus keys deleted in this session: never handed out again.
+  const usedKeys = useRef<Set<string>>(
+    new Set([
+      ...p.initialContent.results.map((r) => r.key),
+      ...Object.keys(p.stats.byResult),
+      ...p.leads.flatMap((l) => (l.result_key ? [l.result_key] : [])),
+      ...Object.keys(p.initialSettings.coupon.perResult),
+    ]),
+  );
 
   const reach = useMemo(() => resultReach(content), [content]);
   const maxReach = Math.max(1, ...Object.values(reach));
 
   function editContent(fn: (c: TestContent) => TestContent) {
     setContent((c) => fn(structuredClone(c)));
+    editVersion.current += 1;
     setDirty(true);
   }
   function editSettings(fn: (s: Settings) => Settings) {
     setSettings((s) => fn(structuredClone(s)));
+    editVersion.current += 1;
     setDirty(true);
+  }
+
+  // Warn before a reload, tab close or in-app link would drop unsaved edits.
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    // Next.js links navigate on the client, where beforeunload never fires; ask before React sees the click.
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+      if (!(a instanceof HTMLAnchorElement) || (a.target && a.target !== "_self") || a.hasAttribute("download")) return;
+      const url = new URL(a.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      if (url.pathname === window.location.pathname && url.search === window.location.search) return;
+      if (!window.confirm("저장하지 않은 변경사항이 있어요. 저장하지 않고 이 페이지를 떠날까요?")) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("click", onClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("click", onClick, true);
+    };
+  }, [dirty]);
+
+  function fail(problem: Problem): false {
+    setMsg({ kind: "err", text: problem.text });
+    setTab(problem.tab);
+    focusField(problem.field);
+    return false;
   }
 
   async function save(): Promise<boolean> {
     const c = TestContentSchema.safeParse(content);
     if (!c.success) {
-      setMsg({ kind: "err", text: c.error.issues[0]?.message ?? "내용을 확인해 주세요" });
-      setTab("content");
-      return false;
+      // Field-level issues first (empty text, too long); the cross-field checks only make sense after those.
+      const issue = c.error.issues.find((i) => i.code !== "custom");
+      if (issue) return fail(contentProblem(issue, content));
     }
-    const s = SettingsSchema.safeParse(settings);
+    const extra = extraProblem(content, settings);
+    if (extra) return fail(extra);
+    if (!c.success) return fail({ tab: "content", text: "질문·결과 구성을 확인해 주세요. 같은 이름의 항목이 겹쳤을 수 있어요." });
+    const s = SettingsSchema.safeParse(cleanSettings(settings, c.data));
     if (!s.success) {
-      setMsg({ kind: "err", text: s.error.issues[0]?.message ?? "설정을 확인해 주세요" });
-      setTab("settings");
-      return false;
+      const issue = s.error.issues[0];
+      return fail(issue ? settingsProblem(issue, content) : { tab: "settings", text: "설정을 확인해 주세요." });
     }
+    const version = editVersion.current;
     setSaving(true);
     try {
       await api(`/api/tests/${p.testId}`, { method: "PATCH", workspace: p.secret, body: { content: c.data, settings: s.data } });
-      setDirty(false);
-      setMsg({ kind: "ok", text: "저장했어요" });
+      if (editVersion.current === version) {
+        setDirty(false);
+        setSettings(s.data);
+        setMsg({ kind: "ok", text: "저장했어요" });
+      } else {
+        setMsg({ kind: "ok", text: "저장했어요. 저장하는 동안 바뀐 내용은 아직 저장 전이에요." });
+      }
       return true;
     } catch (e) {
       setMsg({ kind: "err", text: e instanceof Error ? e.message : "저장하지 못했어요" });
@@ -112,7 +310,10 @@ export default function Editor(p: Props) {
     }
   }
 
-  const resultName = (key: string | null) => content.results.find((r) => r.key === key)?.name ?? key ?? "-";
+  const resultName = (key: string | null) => content.results.find((r) => r.key === key)?.name ?? (key ? "삭제된 유형" : "-");
+  const { code: _code, perResult: _perResult, ...publicCoupon } = settings.coupon;
+  const previewSettings: PublicSettings = { ...settings, coupon: publicCoupon };
+  const couponMissing = settings.coupon.enabled && !settings.coupon.code.trim() ? content.results.filter((r) => !ownCode(settings.coupon.perResult, r.key).trim()) : [];
 
   return (
     <div className="stack-lg">
@@ -125,7 +326,7 @@ export default function Editor(p: Props) {
           </div>
         </div>
         <div className="row">
-          <a className="btn btn-ghost btn-sm" href={`/t/${p.slug}?preview=${p.secret}`} target="_blank" rel="noreferrer">미리보기</a>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setPreviewRun((n) => n + 1)}>미리보기</button>
           <button type="button" className="btn btn-ghost btn-sm" onClick={save} disabled={saving || !dirty}>{saving ? "저장 중…" : "저장"}</button>
           {status === "published" ? (
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => changeStatus("draft")}>발행 중지</button>
@@ -134,7 +335,25 @@ export default function Editor(p: Props) {
           )}
         </div>
       </div>
-      {msg ? <p className={msg.kind === "err" ? "error" : "small"} role="status">{msg.text}</p> : null}
+      {msg ? <p className={msg.kind === "err" ? "error" : "small"} role={msg.kind === "err" ? "alert" : "status"}>{msg.text}</p> : null}
+      {previewRun > 0 ? (
+        <PreviewOverlay onClose={closePreview}>
+          <Player
+            key={previewRun}
+            slug={p.slug}
+            content={content}
+            settings={previewSettings}
+            couponAvailable={settings.coupon.enabled && couponMissing.length < content.results.length}
+            preview
+            previewCoupon={settings.coupon}
+            watermark={p.watermark || p.isHouse}
+            isHouse={p.isHouse}
+            publicUrl={p.publicUrl}
+            kakaoKey=""
+            brandName={p.brandName}
+          />
+        </PreviewOverlay>
+      ) : null}
 
       <div className="tabs" role="tablist">
         {TABS.map((t) => (
@@ -166,32 +385,42 @@ export default function Editor(p: Props) {
             <div className="row between">
               <h2 style={{ fontSize: 20 }}>결과 유형 ({content.results.length})</h2>
               <button type="button" className="btn btn-ghost btn-sm" disabled={content.results.length >= 12}
-                onClick={() => editContent((c) => ({ ...c, results: [...c.results, { key: nextKey(c.results), name: "새 유형", emoji: "✨", tagline: "", description: "", traits: [], bestMatch: null, color: "#2f6fed" }] }))}>
+                onClick={() => editContent((c) => ({ ...c, results: [...c.results, { key: nextKey(c.results, usedKeys.current), name: "새 유형", emoji: "✨", tagline: "", description: "", traits: [], bestMatch: null, color: "#2f6fed" }] }))}>
                 결과 추가
               </button>
             </div>
             {content.results.map((r, ri) => (
               <div key={r.key} className="q-edit">
                 <div className="row">
-                  <input aria-label="이모지" className="input" style={{ width: 64 }} maxLength={8} value={r.emoji} onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).emoji = e.target.value; return c; })} />
-                  <input aria-label="결과 이름" className="input" style={{ flex: 1, minWidth: 160 }} maxLength={40} value={r.name} onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).name = e.target.value; return c; })} />
+                  <input id={`r-${ri}-emoji`} aria-label="이모지" className="input" style={{ width: 64 }} maxLength={8} value={r.emoji} onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).emoji = e.target.value; return c; })} />
+                  <input id={`r-${ri}-name`} aria-label="결과 이름" className="input" style={{ flex: "1 1 140px", minWidth: 0 }} maxLength={40} value={r.name} onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).name = e.target.value; return c; })} />
                   <input aria-label="색" type="color" value={r.color} onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).color = e.target.value; return c; })} style={{ width: 44, height: 40, border: 0, background: "none" }} />
                   <button type="button" className="btn btn-ghost btn-sm" disabled={content.results.length <= 2}
-                    onClick={() => editContent((c) => {
-                      c.results.splice(ri, 1);
-                      for (const q of c.questions) for (const o of q.options) {
-                        o.weights = o.weights.filter((w) => w.key !== r.key);
-                        if (o.weights.length === 0) o.weights = [{ key: (c.results[0] as typeof r).key, points: 1 }];
-                      }
-                      for (const x of c.results) if (x.bestMatch === r.key) x.bestMatch = null;
-                      return c;
-                    })}>삭제</button>
+                    onClick={() => {
+                      const gone = r.key;
+                      usedKeys.current.add(gone);
+                      editContent((c) => {
+                        c.results.splice(ri, 1);
+                        for (const q of c.questions) for (const o of q.options) {
+                          o.weights = o.weights.filter((w) => w.key !== gone);
+                          if (o.weights.length === 0) o.weights = [{ key: (c.results[0] as typeof r).key, points: 1 }];
+                        }
+                        for (const x of c.results) if (x.bestMatch === gone) x.bestMatch = null;
+                        return c;
+                      });
+                      // The deleted result's coupon code must not linger (or pass to a later result).
+                      editSettings((s) => {
+                        if (!Object.hasOwn(s.coupon.perResult, gone)) return s;
+                        const per = { ...s.coupon.perResult };
+                        delete per[gone];
+                        return { ...s, coupon: { ...s.coupon, perResult: per } };
+                      });
+                    }}>삭제</button>
                 </div>
-                <input aria-label="한 줄 요약" className="input" maxLength={100} placeholder="한 줄 요약" value={r.tagline} onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).tagline = e.target.value; return c; })} />
-                <textarea aria-label="설명" className="textarea" maxLength={900} placeholder="결과 설명" value={r.description} onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).description = e.target.value; return c; })} />
+                <input id={`r-${ri}-tagline`} aria-label="한 줄 요약" className="input" maxLength={100} placeholder="한 줄 요약" value={r.tagline} onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).tagline = e.target.value; return c; })} />
+                <textarea id={`r-${ri}-desc`} aria-label="설명" className="textarea" maxLength={900} placeholder="결과 설명" value={r.description} onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).description = e.target.value; return c; })} />
                 <div className="grid-2">
-                  <input aria-label="특징 키워드" className="input" placeholder="특징 키워드 (쉼표로 구분)" value={r.traits.join(", ")}
-                    onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).traits = e.target.value.split(",").map((x) => x.trim()).filter(Boolean).slice(0, 6); return c; })} />
+                  <TraitsInput id={`r-${ri}-traits`} traits={r.traits} onChange={(traits) => editContent((c) => { (c.results[ri] as typeof r).traits = traits; return c; })} />
                   <select aria-label="잘 맞는 유형" className="select" value={r.bestMatch ?? ""} onChange={(e) => editContent((c) => { (c.results[ri] as typeof r).bestMatch = e.target.value || null; return c; })}>
                     <option value="">잘 맞는 유형 없음</option>
                     {content.results.filter((x) => x.key !== r.key).map((x) => <option key={x.key} value={x.key}>잘 맞는 유형: {x.name}</option>)}
@@ -218,14 +447,14 @@ export default function Editor(p: Props) {
               <div key={q.id} className="q-edit">
                 <div className="row">
                   <b className="num">Q{qi + 1}</b>
-                  <input aria-label={`질문 ${qi + 1}`} className="input" style={{ flex: 1, minWidth: 200 }} maxLength={140} value={q.text} onChange={(e) => editContent((c) => { (c.questions[qi] as typeof q).text = e.target.value; return c; })} />
+                  <input id={`q-${qi}-text`} aria-label={`질문 ${qi + 1}`} className="input" style={{ flex: "1 1 180px", minWidth: 0 }} maxLength={140} value={q.text} onChange={(e) => editContent((c) => { (c.questions[qi] as typeof q).text = e.target.value; return c; })} />
                   <button type="button" className="btn btn-ghost btn-sm" disabled={content.questions.length <= 3} onClick={() => editContent((c) => { c.questions.splice(qi, 1); return c; })}>삭제</button>
                 </div>
                 {q.options.map((o, oi) => {
                   const w = o.weights[0];
                   return (
                     <div key={o.id} className="opt-edit">
-                      <input aria-label={`보기 ${oi + 1}`} className="input" maxLength={100} value={o.text} onChange={(e) => editContent((c) => { ((c.questions[qi] as typeof q).options[oi] as typeof o).text = e.target.value; return c; })} />
+                      <input id={`q-${qi}-o-${oi}`} aria-label={`Q${qi + 1} 보기 ${oi + 1}`} className="input" maxLength={100} value={o.text} onChange={(e) => editContent((c) => { ((c.questions[qi] as typeof q).options[oi] as typeof o).text = e.target.value; return c; })} />
                       <select aria-label="점수를 줄 결과" className="select" value={w?.key ?? ""} onChange={(e) => editContent((c) => { const opt = (c.questions[qi] as typeof q).options[oi] as typeof o; opt.weights[0] = { key: e.target.value, points: opt.weights[0]?.points ?? 1 }; return c; })}>
                         {content.results.map((r) => <option key={r.key} value={r.key}>{r.name}</option>)}
                       </select>
@@ -238,7 +467,13 @@ export default function Editor(p: Props) {
                 })}
                 <div className="row">
                   <button type="button" className="btn btn-ghost btn-sm" disabled={q.options.length >= 4}
-                    onClick={() => editContent((c) => { const qq = c.questions[qi] as typeof q; qq.options.push({ id: "abcd"[qq.options.length] ?? "d", text: "새 보기", weights: [{ key: (c.results[0] as TestContent["results"][number]).key, points: 1 }] }); return c; })}>보기 추가</button>
+                    onClick={() => editContent((c) => {
+                      const qq = c.questions[qi] as typeof q;
+                      const taken = new Set(qq.options.map((o) => o.id));
+                      const id = [..."abcdefgh"].find((x) => !taken.has(x)) ?? `o${qq.options.length + 1}`;
+                      qq.options.push({ id, text: "새 보기", weights: [{ key: (c.results[0] as ResultItem).key, points: 1 }] });
+                      return c;
+                    })}>보기 추가</button>
                   <button type="button" className="btn btn-ghost btn-sm" disabled={q.options.length <= 2}
                     onClick={() => editContent((c) => { const qq = c.questions[qi] as typeof q; qq.options.pop(); return c; })}>마지막 보기 삭제</button>
                 </div>
@@ -287,10 +522,13 @@ export default function Editor(p: Props) {
                   <div className="field">
                     <label htmlFor="l-place">폼 위치</label>
                     <select id="l-place" className="select" value={settings.lead.placement} onChange={(e) => editSettings((s) => ({ ...s, lead: { ...s.lead, placement: e.target.value as Settings["lead"]["placement"] } }))}>
-                      <option value="after_result">결과 아래 (공유가 더 잘 돼요)</option><option value="before_result">결과 보기 전 (입력해야 결과 공개)</option>
+                      <option value="after_result">결과 아래 (공유가 더 잘 돼요)</option><option value="before_result">결과 보기 전 (건너뛰기 가능)</option>
                     </select>
                   </div>
                 </div>
+                {settings.lead.placement === "before_result" ? (
+                  <p className="tiny muted">참여자는 정보를 남기지 않고 &lsquo;건너뛰고 결과 보기&rsquo;를 누를 수 있어요. 결과 보기에 꼭 필요하지 않은 개인정보를 이유로 결과를 막을 수는 없어서예요(개인정보보호법 제16조). 쿠폰은 &lsquo;연락처를 남긴 사람에게만 공개&rsquo;로 설정할 수 있어요.</p>
+                ) : null}
                 <label className="check"><input type="checkbox" checked={settings.lead.askMarketing} onChange={(e) => editSettings((s) => ({ ...s, lead: { ...s.lead, askMarketing: e.target.checked } }))} /><span>광고성 정보 수신 동의(선택)를 따로 받기</span></label>
                 <p className="tiny muted">개인정보 수집·이용 동의(필수)와 만 14세 이상 확인은 항상 표시돼요. 수집한 정보는 귀사가 개인정보처리자로서 관리합니다.</p>
               </div>
@@ -309,14 +547,19 @@ export default function Editor(p: Props) {
                   <summary className="small" style={{ cursor: "pointer" }}>결과마다 다른 코드 주기</summary>
                   <div className="stack" style={{ marginTop: 8 }}>
                     {content.results.map((r) => (
-                      <div key={r.key} className="row"><span className="small" style={{ width: 140 }}>{r.name}</span>
-                        <input aria-label={`${r.name} 코드`} className="input" style={{ flex: 1 }} maxLength={40} placeholder="비우면 기본 코드" value={settings.coupon.perResult[r.key] ?? ""}
+                      <div key={r.key} className="row"><span className="small" style={{ flex: "0 1 140px", minWidth: 0 }}>{r.name}</span>
+                        <input id={`c-per-${r.key}`} aria-label={`${r.name} 코드`} className="input" style={{ flex: "1 1 160px", minWidth: 0 }} maxLength={40} placeholder="비우면 기본 코드" value={ownCode(settings.coupon.perResult, r.key)}
                           onChange={(e) => editSettings((s) => { const per = { ...s.coupon.perResult }; if (e.target.value) per[r.key] = e.target.value; else delete per[r.key]; return { ...s, coupon: { ...s.coupon, perResult: per } }; })} />
                       </div>
                     ))}
                   </div>
                 </details>
                 <div className="field"><label htmlFor="c-note">사용 안내</label><input id="c-note" className="input" maxLength={200} placeholder="예) 매장 결제 시 화면을 보여 주세요 (~12/31)" value={settings.coupon.note} onChange={(e) => editSettings((s) => ({ ...s, coupon: { ...s.coupon, note: e.target.value } }))} /></div>
+                {couponMissing.length > 0 ? (
+                  <p className="tiny" style={{ color: "var(--warn)" }}>
+                    {couponMissing.length === content.results.length ? "코드가 비어 있어서 쿠폰이 보이지 않아요. 기본 코드를 넣어 주세요." : `코드가 없는 결과(${couponMissing.map((r) => r.name).join(", ")})에는 쿠폰이 보이지 않아요. 기본 코드를 넣거나 결과마다 코드를 넣어 주세요.`}
+                  </p>
+                ) : null}
                 {settings.lead.enabled ? <label className="check"><input type="checkbox" checked={settings.coupon.requireLead} onChange={(e) => editSettings((s) => ({ ...s, coupon: { ...s.coupon, requireLead: e.target.checked } }))} /><span>연락처를 남긴 사람에게만 쿠폰 공개</span></label> : null}
               </div>
             ) : null}
@@ -368,7 +611,7 @@ export default function Editor(p: Props) {
         <div className="stack">
           <div className="row between">
             <b>리드 {p.leadsTotal.toLocaleString("ko-KR")}건</b>
-            <a className="btn btn-ghost btn-sm" href={`/api/tests/${p.testId}/leads?ws=${p.secret}`}>CSV 내려받기</a>
+            <a className="btn btn-ghost btn-sm" href={`/api/tests/${p.testId}/leads?ws=${p.secret}`} download>CSV 내려받기</a>
           </div>
           {p.leadsHidden > 0 ? <div className="notice">무료 플랜은 20건까지 보여요. {p.leadsHidden}건이 더 있어요. <Link href="/pricing">프로로 업그레이드</Link>하면 전체를 보고 내려받을 수 있어요.</div> : null}
           {p.leads.length === 0 ? <p className="muted small">아직 모인 리드가 없어요. 설정 탭에서 리드 수집을 켜고 발행해 보세요.</p> : (
@@ -377,7 +620,7 @@ export default function Editor(p: Props) {
                 <thead><tr><th>일시</th><th>결과</th><th>이름</th><th>연락처</th><th>이메일</th><th>마케팅</th></tr></thead>
                 <tbody>
                   {p.leads.map((l) => (
-                    <tr key={l.id}><td className="num">{new Date(l.created_at).toLocaleString("ko-KR")}</td><td>{resultName(l.result_key)}</td><td>{l.name ?? ""}</td><td className="num">{l.phone ?? ""}</td><td>{l.email ?? ""}</td><td>{l.consent_marketing ? "동의" : "-"}</td></tr>
+                    <tr key={l.id}><td className="num">{new Date(l.created_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}</td><td>{resultName(l.result_key)}</td><td>{l.name ?? ""}</td><td className="num">{l.phone ?? ""}</td><td>{l.email ?? ""}</td><td>{l.consent_marketing ? "동의" : "-"}</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -404,6 +647,35 @@ export default function Editor(p: Props) {
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** Full-screen preview of the unsaved test. Player runs in preview mode: nothing is tracked, stored or shared. */
+function PreviewOverlay({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    const prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    document.body.style.overflow = "hidden";
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", onKey);
+      prevFocus?.focus();
+    };
+  }, [onClose]);
+  return (
+    <div className="preview-overlay" role="dialog" aria-modal="true" aria-label="테스트 미리보기">
+      <div className="preview-bar">
+        <span className="small"><b>미리보기</b> · 저장하지 않은 내용도 보여요</span>
+        <button ref={closeRef} type="button" className="btn btn-dark btn-sm" onClick={onClose}>닫기</button>
+      </div>
+      {children}
     </div>
   );
 }

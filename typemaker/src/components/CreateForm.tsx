@@ -2,8 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { api, getSavedWorkspace, saveWorkspace } from "@/lib/client";
+import { api } from "@/lib/client";
 import type { Brief } from "@/lib/schema";
+import { knownWorkspaces, maskEmail, switchWorkspace, workspaceLabel, type KnownWorkspace } from "./WorkspaceBits";
 
 type Goal = Brief["goal"];
 type Tone = Brief["tone"];
@@ -39,6 +40,15 @@ export default function CreateForm({ aiEnabled }: { aiEnabled: boolean }) {
   const [busy, setBusy] = useState(false);
   const [waitIdx, setWaitIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Which workspace receives the test: one this browser already uses, or "new". Always shown, never implied.
+  const [known, setKnown] = useState<KnownWorkspace[]>([]);
+  const [target, setTarget] = useState<string>("new");
+
+  useEffect(() => {
+    const list = knownWorkspaces();
+    setKnown(list);
+    setTarget(list[0]?.secret ?? "new");
+  }, []);
 
   useEffect(() => {
     if (!busy) return;
@@ -60,7 +70,7 @@ export default function CreateForm({ aiEnabled }: { aiEnabled: boolean }) {
     setBusy(true);
     try {
       const res = await api<{ mode: "ready" | "queued"; workspaceSecret: string; testId?: string; notice?: string | null }>("/api/tests", {
-        workspace: getSavedWorkspace(),
+        workspace: target === "new" ? null : target,
         body: {
           brief: { topic, brandName, audience, goal, resultCount, questionCount, tone, extra },
           email,
@@ -68,7 +78,9 @@ export default function CreateForm({ aiEnabled }: { aiEnabled: boolean }) {
           mode: concierge ? "concierge" : "instant",
         },
       });
-      saveWorkspace(res.workspaceSecret);
+      // A new workspace is named like the server names it; an existing one keeps the label its dashboard gave it.
+      const newLabel = brandName.trim() || (email.trim() ? maskEmail(email.trim()) : "");
+      switchWorkspace(res.workspaceSecret, target === "new" ? newLabel : "");
       if (res.mode === "queued") router.push(`/w/${res.workspaceSecret}?queued=1`);
       else router.push(`/w/${res.workspaceSecret}/t/${res.testId}${res.notice ? "?notice=fallback" : "?new=1"}`);
     } catch (err) {
@@ -154,6 +166,20 @@ export default function CreateForm({ aiEnabled }: { aiEnabled: boolean }) {
       </div>
 
       <div className="card stack">
+        {known.length > 0 ? (
+          <div className="field">
+            <label htmlFor="ws-target">만들 곳</label>
+            <select id="ws-target" className="select" value={target} onChange={(e) => setTarget(e.target.value)}>
+              {known.map((w) => <option key={w.secret} value={w.secret}>{workspaceLabel(w)}</option>)}
+              <option value="new">새 워크스페이스 만들기</option>
+            </select>
+            <span className="hint">
+              {target === "new"
+                ? "새 관리 링크가 만들어져요. 지금 이 브라우저의 '내 테스트'도 새 워크스페이스로 바뀌어요."
+                : "이 브라우저에 저장된 워크스페이스예요. 테스트가 여기에 저장되고, 아래에 이메일을 적으면 이 워크스페이스의 연락처로 등록돼요."}
+            </span>
+          </div>
+        ) : null}
         <div className="field">
           <label htmlFor="email">이메일 (선택)</label>
           <input id="email" type="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="관리 링크와 완성 알림을 보내 드려요" maxLength={120} />

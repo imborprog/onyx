@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import Editor from "@/components/Editor";
-import { appUrl, PLAN_LIMITS } from "@/lib/config";
+import { appUrl, BRAND, PLAN_LIMITS } from "@/lib/config";
 import { effectivePlan, getTestForWorkspace, getWorkspaceBySecret, listLeads, testStats } from "@/lib/repo";
 import { RememberWorkspace } from "@/components/WorkspaceBits";
 
@@ -21,7 +21,7 @@ export default async function EditorPage({ params, searchParams }: { params: Pro
 
   return (
     <div className="container" style={{ paddingBlock: 28 }}>
-      <RememberWorkspace secret={secret} />
+      <RememberWorkspace secret={secret} brandName={ws.brand_name} email={ws.owner_email} />
       <div className="stack">
         <Link href={`/w/${secret}`} className="small muted">← 내 테스트</Link>
         {sp.notice === "fallback" ? <div className="notice">AI 응답이 불안정해 기본 템플릿으로 초안을 만들었어요. 문구를 직접 다듬어 주세요.</div> : null}
@@ -35,6 +35,8 @@ export default async function EditorPage({ params, searchParams }: { params: Pro
           initialSettings={test.settings}
           plan={plan}
           watermark={PLAN_LIMITS[plan].watermark}
+          isHouse={ws.is_house}
+          brandName={BRAND.name}
           stats={stats}
           leads={leads.rows.map((l) => ({ ...l, created_at: new Date(l.created_at).toISOString() }))}
           leadsHidden={leads.hidden}

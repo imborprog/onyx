@@ -1,18 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import { api } from "@/lib/client";
-import type { Settings } from "@/lib/schema";
+import { api, sessionId } from "@/lib/client";
+import type { PublicSettings } from "./Player";
 
 interface Props {
   slug: string;
-  settings: Settings;
+  settings: PublicSettings;
   resultKey: string;
   preview: boolean;
-  onDone: () => void;
+  /** Text color that stays readable on the accent-colored submit button. */
+  accentInk?: string;
+  /** coupon: the code released for this result, or null when there is none (always null in preview). */
+  onDone: (coupon: string | null) => void;
 }
 
-export default function LeadForm({ slug, settings, resultKey, preview, onDone }: Props) {
+export default function LeadForm({ slug, settings, resultKey, preview, accentInk, onDone }: Props) {
   const f = settings.lead.fields;
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -34,15 +37,26 @@ export default function LeadForm({ slug, settings, resultKey, preview, onDone }:
       return;
     }
     if (preview) {
-      onDone();
+      onDone(null);
       return;
     }
     setBusy(true);
     try {
-      await api("/api/leads", {
-        body: { slug, resultKey, name: name || null, phone: phone || null, email: email || null, consentPrivacy: privacy, ageOver14: age, consentMarketing: marketing, consentNight: marketing && night },
+      const res = await api<{ ok: true; coupon: string | null }>("/api/leads", {
+        body: {
+          slug,
+          resultKey,
+          name: name || null,
+          phone: phone || null,
+          email: email || null,
+          consentPrivacy: privacy,
+          ageOver14: age,
+          consentMarketing: marketing,
+          consentNight: marketing && night,
+          sessionId: sessionId(),
+        },
       });
-      onDone();
+      onDone(typeof res.coupon === "string" && res.coupon ? res.coupon : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "제출하지 못했어요");
     } finally {
@@ -52,12 +66,12 @@ export default function LeadForm({ slug, settings, resultKey, preview, onDone }:
 
   return (
     <form className="stack" onSubmit={submit}>
-      {f.includes("name") ? <input className="input" aria-label="이름" placeholder="이름" value={name} onChange={(e) => setName(e.target.value)} maxLength={40} required /> : null}
-      {f.includes("phone") ? <input className="input" aria-label="연락처" placeholder="연락처 (010-0000-0000)" inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={20} required /> : null}
-      {f.includes("email") ? <input className="input" aria-label="이메일" type="email" placeholder="이메일" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={120} required /> : null}
+      {f.includes("name") ? <input className="input" aria-label="이름" placeholder="이름" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} maxLength={40} required /> : null}
+      {f.includes("phone") ? <input className="input" aria-label="연락처" placeholder="연락처 (010-0000-0000)" type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={20} required /> : null}
+      {f.includes("email") ? <input className="input" aria-label="이메일" type="email" placeholder="이메일" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={120} required /> : null}
       <label className="check">
         <input type="checkbox" checked={privacy} onChange={(e) => setPrivacy(e.target.checked)} />
-        <span>[필수] 개인정보 수집·이용 동의 — 수집자: {collector} / 항목: {items} / 목적: {settings.lead.purpose} / 보유기간: {settings.lead.retentionDays}일 후 파기. 동의를 거부할 수 있으며, 거부 시 참여 혜택이 제한될 수 있어요.</span>
+        <span>[필수] 개인정보 수집·이용 동의 — 수집자: {collector} / 항목: {items} / 목적: {settings.lead.purpose} / 보유기간: {settings.lead.retentionDays}일 후 파기. 동의를 거부할 수 있어요. 거부해도 테스트 결과는 볼 수 있지만, 연락처가 필요한 참여 혜택(쿠폰·안내 등)은 받을 수 없어요.</span>
       </label>
       <label className="check">
         <input type="checkbox" checked={age} onChange={(e) => setAge(e.target.checked)} />
@@ -78,7 +92,7 @@ export default function LeadForm({ slug, settings, resultKey, preview, onDone }:
         </>
       ) : null}
       {error ? <p className="error" role="alert">{error}</p> : null}
-      <button type="submit" className="btn btn-primary btn-block" style={{ background: settings.theme.accent }} disabled={busy}>{busy ? "제출 중…" : "제출하기"}</button>
+      <button type="submit" className="btn btn-primary btn-block" style={{ background: settings.theme.accent, color: accentInk }} disabled={busy}>{busy ? "제출 중…" : "제출하기"}</button>
     </form>
   );
 }

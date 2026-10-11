@@ -11,6 +11,11 @@ export const dynamic = "force-dynamic";
 const PLAN_LABEL = { free: "무료", pro: "프로", agency: "대행사" } as const;
 const STATUS_LABEL = { draft: "초안", published: "발행됨", archived: "보관" } as const;
 
+// Server components render in UTC on Vercel; dates are always shown in Korean time.
+function kstDate(d: Date | string): string {
+  return new Date(d).toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" });
+}
+
 export default async function WorkspacePage({ params, searchParams }: { params: Promise<{ secret: string }>; searchParams: Promise<{ queued?: string; paid?: string }> }) {
   const { secret } = await params;
   const sp = await searchParams;
@@ -22,14 +27,14 @@ export default async function WorkspacePage({ params, searchParams }: { params: 
 
   return (
     <div className="container" style={{ paddingBlock: 32 }}>
-      <RememberWorkspace secret={secret} />
+      <RememberWorkspace secret={secret} brandName={ws.brand_name} email={ws.owner_email} />
       <div className="stack-lg">
         <div className="row between">
           <div className="stack" style={{ gap: 6 }}>
             <h1 className="display" style={{ fontSize: 32 }}>{ws.brand_name ? `${ws.brand_name}의 테스트` : "내 테스트"}</h1>
             <div className="row small">
               <span className={plan === "free" ? "pill gray" : "pill green"}>{PLAN_LABEL[plan]} 플랜</span>
-              {plan !== "free" && ws.plan_expires_at ? <span className="muted">{new Date(ws.plan_expires_at).toLocaleDateString("ko-KR")}까지</span> : null}
+              {plan !== "free" && ws.plan_expires_at ? <span className="muted">{kstDate(ws.plan_expires_at)}까지</span> : null}
               <span className="muted">AI 생성 하루 {PLAN_LIMITS[plan].aiGenerationsPerDay}회</span>
             </div>
           </div>
@@ -66,7 +71,7 @@ export default async function WorkspacePage({ params, searchParams }: { params: 
               <tbody>
                 {tests.map((t) => (
                   <tr key={t.id}>
-                    <td><Link href={`/w/${secret}/t/${t.id}`}><b>{t.title}</b></Link><div className="tiny muted">{new Date(t.created_at).toLocaleDateString("ko-KR")}</div></td>
+                    <td><Link href={`/w/${secret}/t/${t.id}`}><b>{t.title}</b></Link><div className="tiny muted">{kstDate(t.created_at)}</div></td>
                     <td><span className={t.status === "published" ? "pill green" : "pill gray"}>{STATUS_LABEL[t.status]}</span></td>
                     <td className="num">{t.views.toLocaleString("ko-KR")}</td>
                     <td className="num">{t.completes.toLocaleString("ko-KR")}</td>
