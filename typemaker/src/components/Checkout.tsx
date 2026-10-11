@@ -218,7 +218,7 @@ export default function Checkout(props: CheckoutProps) {
         </>
       ) : !loadingTarget ? (
         <p className="small">
-          이 브라우저에는 저장된 워크스페이스가 없어요. 이미 테스트를 만들었다면 <b>관리 링크</b>(…/w/로 시작하는 주소)를 붙여 넣어 주세요. 그 워크스페이스에 플랜이 적용돼요.
+          플랜을 적용할 워크스페이스가 정해지지 않았어요. 이미 테스트를 만들었다면 <b>관리 링크</b>(…/w/로 시작하는 주소)를 붙여 넣어 주세요. 그 워크스페이스에 플랜이 적용돼요.
         </p>
       ) : null}
       {!loadingTarget && (changing || !target) ? (
@@ -232,6 +232,18 @@ export default function Checkout(props: CheckoutProps) {
             onChange={(e) => setLinkInput(e.target.value)}
           />
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => void applyLink()}>확인</button>
+          {target ? (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                setChanging(false);
+                setLinkError(null);
+              }}
+            >
+              취소
+            </button>
+          ) : null}
         </div>
       ) : null}
       {linkError ? <p className="error small" role="alert">{linkError}</p> : null}
