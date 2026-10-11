@@ -39,7 +39,8 @@ export default async function WorkspacePage({ params, searchParams }: { params: 
             </div>
           </div>
           <div className="row">
-            {plan === "free" ? <Link href="/pricing" className="btn btn-ghost">업그레이드</Link> : null}
+            {/* The checkout applies the plan to this workspace (it reads ?ws=, then strips it from the URL). */}
+            <Link href={`/pricing?ws=${secret}`} className="btn btn-ghost">{plan === "free" ? "업그레이드" : "기간 연장·변경"}</Link>
             <Link href="/create" className="btn btn-primary">새 테스트 만들기</Link>
           </div>
         </div>

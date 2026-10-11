@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { couponCodeFor, emailSchema, ipHash, jsonError, readBody } from "@/lib/http";
+import { emailSchema, ipHash, jsonError, readBody } from "@/lib/http";
 import { insertLeadLimited } from "@/lib/limits";
 import { getPublicTest } from "@/lib/repo";
+import { couponCodeFor } from "@/lib/schema";
 
 export const runtime = "nodejs";
 

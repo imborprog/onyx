@@ -510,7 +510,20 @@ export async function fulfillOrder(orderId: string, paymentKey: string, raw: unk
     const product = PRODUCTS[order.product];
     if (!product) throw new Error(`order ${orderId} has unknown product ${order.product}`);
     const change = nextPlan({ plan: ws.plan, expiresAt: ws.plan_expires_at }, product, new Date(ws.now));
-    await q.query(`update orders set status = 'paid', payment_key = $2, raw = $3::jsonb, paid_at = now() where id = $1`, [order.id, paymentKey, JSON.stringify(raw)]);
+    // plan_change has the shape ops.fulfill_manual_order writes, so ops.refund_order can reverse exactly what this order added.
+    const planChange = {
+      kind: change.kind,
+      plan_before: ws.plan,
+      until_before: ws.plan_expires_at ? new Date(ws.plan_expires_at).toISOString() : null,
+      plan_after: change.plan,
+      until_after: change.expiresAt.toISOString(),
+      converted_days: Math.round(change.convertedDays * 10_000) / 10_000,
+    };
+    await q.query(`update orders set status = 'paid', payment_key = $2, raw = $3::jsonb, paid_at = now() where id = $1`, [
+      order.id,
+      paymentKey,
+      JSON.stringify({ toss: raw, plan_change: planChange }),
+    ]);
     await q.query(`update workspaces set plan = $2, plan_expires_at = $3::timestamptz where id = $1`, [order.workspace_id, change.plan, change.expiresAt.toISOString()]);
     if (product.concierge) {
       await q.query(
@@ -595,6 +608,14 @@ export interface OutboxRow {
   body_text: string;
   attempts: number;
   kind: OutboxKind;
+  ref: string | null;
+}
+
+/** Auto-acknowledgements (ref 'ack:…', see limits.ts) go last, so a burst of them never delays receipts or operator replies. */
+function sendOrder(a: OutboxRow, b: OutboxRow): number {
+  const ackA = a.ref?.startsWith("ack:") ? 1 : 0;
+  const ackB = b.ref?.startsWith("ack:") ? 1 : 0;
+  return ackA - ackB || Number(a.id) - Number(b.id);
 }
 
 // Marketing consent for outbox row `o` at send time, the same rule as ops.marketing_allowed
@@ -629,12 +650,13 @@ export async function claimEmails(limit = 20): Promise<OutboxRow[]> {
     );
     return q.query<OutboxRow>(
       `update outbox set status = 'sending', claimed_at = now()
-        where id in (select id from outbox where status = 'pending' and attempts < 5 order by id limit $1 for update skip locked)
-       returning id, to_email, subject, body_text, attempts, kind`,
+        where id in (select id from outbox where status = 'pending' and attempts < 5
+                      order by (coalesce(ref, '') like 'ack:%'), id limit $1 for update skip locked)
+       returning id, to_email, subject, body_text, attempts, kind, ref`,
       [limit],
     );
   });
-  return rows.sort((a, b) => Number(a.id) - Number(b.id));
+  return rows.sort(sendOrder);
 }
 
 export async function markEmail(id: number, ok: boolean, error?: string): Promise<void> {

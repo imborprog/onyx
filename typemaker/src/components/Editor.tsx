@@ -169,7 +169,8 @@ function extraProblem(c: TestContent, s: Settings): Problem | null {
   }
   if (s.lead.enabled && !s.lead.purpose.trim()) return { tab: "settings", text: "수집 목적을 적어 주세요. 참여자 동의 문구에 그대로 표시돼요.", field: "l-purpose" };
   if (s.cta.enabled && !s.cta.label.trim()) return { tab: "settings", text: "버튼 문구를 입력해 주세요.", field: "cta-l" };
-  if (s.cta.enabled && !/^https?:\/\/\S+$/.test(s.cta.url.trim())) return { tab: "settings", text: "버튼 링크는 https:// 로 시작하는 주소로 넣어 주세요.", field: "cta-u" };
+  // A site path ("/create") is what operator-made drafts use; ops.validate_settings allows the same two forms.
+  if (s.cta.enabled && !/^(https?:\/\/\S+|\/(?!\/)\S*)$/.test(s.cta.url.trim())) return { tab: "settings", text: "버튼 링크는 https:// 로 시작하는 주소로 넣어 주세요.", field: "cta-u" };
   return null;
 }
 

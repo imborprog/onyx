@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api, getSavedWorkspace, saveWorkspace } from "@/lib/client";
 
@@ -172,7 +173,19 @@ export function CopyButton({ text, label = "복사" }: { text: string; label?: s
   );
 }
 
+/** Removes a workspace secret passed in the query string (e.g. /pricing?ws=…) from the address bar and history. */
+export function ForgetUrlSecret({ param = "ws" }: { param?: string }) {
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has(param)) return;
+    url.searchParams.delete(param);
+    window.history.replaceState(window.history.state, "", url.toString());
+  }, [param]);
+  return null;
+}
+
 export function ProfileForm({ secret, email, brandName, marketingOptIn }: { secret: string; email: string; brandName: string; marketingOptIn: boolean }) {
+  const router = useRouter();
   const [e, setE] = useState(email);
   const [b, setB] = useState(brandName);
   const [m, setM] = useState(marketingOptIn);
@@ -188,6 +201,8 @@ export function ProfileForm({ secret, email, brandName, marketingOptIn }: { secr
           await api("/api/workspace", { method: "PATCH", workspace: secret, body: { email: e, brandName: b, marketingOptIn: m } });
           setMsg("저장했어요");
           if (getSavedWorkspace() === secret || readKnown().some((w) => w.secret === secret)) rememberWorkspace(secret, b.trim() || (e ? maskEmail(e.trim()) : ""));
+          // The heading shows the brand name from the server render.
+          router.refresh();
         } catch (err) {
           setMsg(err instanceof Error ? err.message : "저장하지 못했어요");
         } finally {
@@ -198,7 +213,7 @@ export function ProfileForm({ secret, email, brandName, marketingOptIn }: { secr
       <div className="grid-2">
         <div className="field">
           <label htmlFor="ws-email">이메일</label>
-          <input id="ws-email" type="email" className="input" value={e} onChange={(x) => setE(x.target.value)} placeholder="관리 링크 분실 시 본인 확인용" maxLength={120} autoComplete="email" />
+          <input id="ws-email" type="email" className="input" value={e} onChange={(x) => setE(x.target.value)} placeholder="관리 링크를 잃어버리면 이 주소로 다시 보내 드려요" maxLength={120} autoComplete="email" />
         </div>
         <div className="field">
           <label htmlFor="ws-brand">브랜드 이름</label>

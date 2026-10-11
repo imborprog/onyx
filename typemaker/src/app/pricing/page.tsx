@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ForgetUrlSecret } from "@/components/WorkspaceBits";
 import { BRAND, PLAN_LIMITS, PRODUCTS, type ProductId } from "@/lib/config";
 
 export const metadata: Metadata = { title: "요금", description: "무료로 시작하고 필요할 때만 결제하세요. 자동 갱신 없는 이용권." };
@@ -17,9 +18,17 @@ const ROWS: { label: string; free: string; pro: string; agency: string }[] = [
 
 const ORDER: ProductId[] = ["pro_month", "pro_year", "agency_month", "campaign"];
 
-export default function PricingPage() {
+/** Coming from a dashboard, the workspace travels on to the checkout so the plan lands on that workspace. */
+function checkoutHref(id: ProductId, ws: string | null): string {
+  return `/checkout?product=${id}${ws ? `&ws=${ws}` : ""}`;
+}
+
+export default async function PricingPage({ searchParams }: { searchParams: Promise<{ ws?: string | string[] }> }) {
+  const raw = (await searchParams).ws;
+  const ws = typeof raw === "string" && /^[a-f0-9]{20,64}$/.test(raw) ? raw : null;
   return (
     <div className="container" style={{ paddingBlock: 40 }}>
+      {ws ? <ForgetUrlSecret /> : null}
       <div className="stack-lg">
         <div className="stack">
           <h1 className="display" style={{ fontSize: 36 }}>필요할 때만 결제하세요</h1>
@@ -38,7 +47,7 @@ export default function PricingPage() {
                 </div>
                 <p className="display num" style={{ fontSize: 32 }}>{won(p.amount)}</p>
                 <p className="muted small">{p.blurb}</p>
-                <Link href={`/checkout?product=${id}`} className={id === "pro_month" ? "btn btn-primary" : "btn btn-ghost"}>구매하기</Link>
+                <Link href={checkoutHref(id, ws)} className={id === "pro_month" ? "btn btn-primary" : "btn btn-ghost"}>구매하기</Link>
               </div>
             );
           })}

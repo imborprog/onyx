@@ -317,7 +317,8 @@ export async function insertLeadLimited(input: {
     if ((recent[0]?.day ?? 0) >= limits.leadsPerIpPerDay || (recent[0]?.test_hour ?? 0) >= limits.leadsPerIpPerTestPerHour) {
       return { ok: false, reason: "ip" };
     }
-    if (input.sessionId) {
+    // Older clients sent the constant "nosession" without sessionStorage; it is shared, so it is no session at all.
+    if (input.sessionId && input.sessionId !== "nosession") {
       const mine = await q.query<{ n: number }>(
         `select count(*)::int as n from events
           where test_id = $1 and type = 'lead_submit' and session_id = $2 and created_at > now() - interval '1 day'`,

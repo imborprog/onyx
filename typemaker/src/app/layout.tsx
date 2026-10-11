@@ -47,7 +47,10 @@ function Footer() {
           <Link href="/contact">도입 문의</Link>
         </div>
         {bizLine.length > 0 ? <p>{bizLine.join(" · ")}</p> : <p>사업자 정보 준비 중</p>}
-        {BRAND.supportEmail ? <p>이메일 {BRAND.supportEmail}</p> : null}
+        <p>
+          {BRAND.supportEmail ? <>이메일 <a href={`mailto:${BRAND.supportEmail}`}>{BRAND.supportEmail}</a></> : <>문의 <Link href="/support">고객지원</Link></>}
+          {" · "}호스팅 서비스 제공자 {b.hosting}
+        </p>
         <p>© {seoulYear()} {BRAND.name}</p>
       </div>
     </footer>

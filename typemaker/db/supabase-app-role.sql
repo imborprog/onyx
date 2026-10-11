@@ -26,6 +26,11 @@ create policy app_all on public.outbox for all to app_user using (true) with che
 create policy app_all on public.content_queue for all to app_user using (true) with check (true);
 create policy app_all on public.ops_log for all to app_user using (true) with check (true);
 create policy app_all on public.kv for all to app_user using (true) with check (true);
+-- Tables from 004_review_schema.sql (004 and 005 also create these when app_user already exists).
+drop policy if exists app_all on public.generation_attempts;
+create policy app_all on public.generation_attempts for all to app_user using (true) with check (true);
+drop policy if exists app_all on public.marketing_suppressions;
+create policy app_all on public.marketing_suppressions for all to app_user using (true) with check (true);
 
 revoke all on all tables in schema public from anon, authenticated;
 revoke all on all sequences in schema public from anon, authenticated;

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { jsonError, readBody } from "@/lib/http";
-import { addTicketMessage, getTicketByToken } from "@/lib/repo";
+import { addCustomerMessageLimited } from "@/lib/limits";
+import { getTicketByToken } from "@/lib/repo";
 
 export const runtime = "nodejs";
 
@@ -13,6 +14,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ token: string 
   if (!ticket) return jsonError(404, "문의를 찾을 수 없어요");
   const body = await readBody(req, Body);
   if (!body.ok) return body.res;
-  await addTicketMessage(ticket.id, "customer", body.data.body);
+  // Anyone holding the ticket link can post, so follow-ups are capped per ticket per day.
+  if (!(await addCustomerMessageLimited(ticket.id, body.data.body))) {
+    return jsonError(429, "오늘은 이 문의에 더 남길 수 없어요. 담당자 답변을 기다려 주세요.");
+  }
   return NextResponse.json({ ok: true });
 }

@@ -34,15 +34,20 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
   return data;
 }
 
+let memorySessionId: string | null = null;
+
+/** Random per-tab id. Without sessionStorage (some private modes) it lives for this page load only, never a shared constant. */
 export function sessionId(): string {
   const k = "typemaker.sid";
+  const fresh = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
   try {
     const existing = window.sessionStorage.getItem(k);
     if (existing) return existing;
-    const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const id = fresh();
     window.sessionStorage.setItem(k, id);
     return id;
   } catch {
-    return "nosession";
+    memorySessionId ??= fresh();
+    return memorySessionId;
   }
 }

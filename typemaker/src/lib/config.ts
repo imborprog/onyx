@@ -12,6 +12,8 @@ export const BUSINESS = {
   mailOrderNo: process.env.NEXT_PUBLIC_BIZ_MAIL_ORDER_NO ?? "",
   address: process.env.NEXT_PUBLIC_BIZ_ADDRESS ?? "",
   phone: process.env.NEXT_PUBLIC_BIZ_PHONE ?? "",
+  /** 호스팅서비스 제공자 (전자상거래법 제10조). */
+  hosting: process.env.NEXT_PUBLIC_BIZ_HOSTING || "Vercel Inc.",
 } as const;
 
 export type Plan = "free" | "pro" | "agency";
@@ -152,16 +154,17 @@ export function appUrl(): string {
   return "http://localhost:3000";
 }
 
-export function isProduction(): boolean {
-  return Boolean(process.env.VERCEL) || process.env.NODE_ENV === "production";
-}
-
 const DEV_IP_SALT = "typemaker-dev-salt";
 
-/** Key for the IP HMAC. The dev fallback is public, so production refuses to run without a real one. */
+/**
+ * Key for the IP HMAC. The dev fallback is public, so a deployment refuses to run without a real
+ * one: on Vercel, or whenever the app talks to a real Postgres (DATABASE_URL). A local
+ * `next start` on the embedded PGlite database (e2e runs) may use the dev key.
+ */
 function ipSalt(): string {
   const salt = (process.env.IP_HASH_SALT ?? "").trim();
-  if (isProduction() && (!salt || salt === DEV_IP_SALT)) {
+  const deployed = Boolean(process.env.VERCEL) || Boolean(process.env.DATABASE_URL);
+  if (deployed && (!salt || salt === DEV_IP_SALT)) {
     throw new Error("IP_HASH_SALT is missing or still the public development value. Set it to a long random string (e.g. `openssl rand -hex 32`) before running in production.");
   }
   return salt || DEV_IP_SALT;

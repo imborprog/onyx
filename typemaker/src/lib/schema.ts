@@ -60,8 +60,8 @@ export const TestContentSchema = z
         }
       }
     }
-    for (const k of keys) {
-      if (!used.has(k)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `나올 수 없는 결과: ${k}` });
+    for (const r of c.results) {
+      if (!used.has(r.key)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `어떤 보기로도 나올 수 없는 결과: ${r.name} (${r.key})` });
     }
   });
 
@@ -136,6 +136,12 @@ export function parseSettings(raw: unknown): Settings {
     coupon: section("coupon", shape.coupon),
     cta: section("cta", shape.cta),
   };
+}
+
+/** The coupon code a participant with this result gets: the per-result code if set, else the common one. */
+export function couponCodeFor(coupon: Settings["coupon"], resultKey: string | null): string | null {
+  const perResult = resultKey && Object.hasOwn(coupon.perResult, resultKey) ? coupon.perResult[resultKey] : undefined;
+  return perResult || coupon.code || null;
 }
 
 // ---------------------------------------------------------------- plan purchases

@@ -282,7 +282,7 @@ export default function Checkout(props: CheckoutProps) {
           <div className="field"><label htmlFor="ck-co">회사·가게 이름</label><input id="ck-co" className="input" value={company} onChange={(e) => setCompany(e.target.value)} /></div>
           <label className="check">
             <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-            <span>[필수] 결제 안내를 위해 이메일·회사명을 수집하고 1년간 보관하는 데 동의합니다.</span>
+            <span>[필수] 결제 안내를 위해 이메일·회사명과 요청 내용을 수집·이용하고, 마지막 처리 후 1년이 지나면 삭제하는 데 동의합니다. 요청은 AI(Anthropic의 Claude)가 읽고 회신하며, 입금 확인은 사람이 해요. 동의하지 않을 수 있지만, 그러면 결제 안내를 받을 수 없어요.</span>
           </label>
           {error ? <p className="error" role="alert">{error}</p> : null}
           <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "보내는 중…" : "결제 안내 받기"}</button>

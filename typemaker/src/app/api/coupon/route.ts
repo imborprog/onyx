@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { couponCodeFor } from "@/lib/http";
 import { getPublicTest } from "@/lib/repo";
+import { couponCodeFor } from "@/lib/schema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

@@ -593,7 +593,7 @@ begin
       || '전송자: ' || ops.brand() || E'\n'
       || '연락처: ' || v_contact || E'\n'
       || '이 메일은 ' || ops.brand() || '의 새 기능·할인 소식 수신에 동의하신 분께 보내 드렸습니다.' || E'\n'
-      || '수신거부(Unsubscribe): ' || ops.app_url() || '/support 에서 내용에 "수신거부"와 이 이메일 주소를 적어 보내 주시면 바로 발송을 멈춥니다. 비용은 들지 않습니다.' || E'\n'
+      || '수신거부(Unsubscribe): ' || ops.app_url() || '/support 에서 문의 유형 "광고 수신거부"를 골라 이 이메일 주소를 적어 보내 주시면 바로 발송을 멈춥니다. 비용은 들지 않습니다.' || E'\n'
       || '이 메일은 발신 전용이라 회신으로는 수신거부를 받을 수 없습니다.';
   end if;
   insert into public.outbox (to_email, subject, body_text, kind) values (v_to, v_subject, v_body, p_kind)
@@ -843,7 +843,7 @@ begin
            when v_notice = 'in' then
              v_date || '에 이 이메일 주소(' || v_to || ')로 ' || v_brand || '의 새 기능·할인 소식(광고성 정보) 이메일 수신 동의가 접수됐습니다.' || E'\n\n'
              || '- 전송자: ' || v_brand || E'\n' || '- 동의 일자: ' || v_date || E'\n' || '- 처리 결과: 수신 동의' || E'\n\n'
-             || '동의한 적이 없거나 더 이상 받고 싶지 않으시면 ' || v_url || '/support 에서 내용에 "수신거부"와 이 이메일 주소를 적어 보내 주세요. 바로 처리해 드립니다.'
+             || '동의한 적이 없거나 더 이상 받고 싶지 않으시면 ' || v_url || '/support 에서 문의 유형 "광고 수신거부"를 골라 이 이메일 주소를 적어 보내 주세요. 바로 처리해 드립니다.'
            else
              v_date || '에 이 이메일 주소(' || v_to || ')의 광고성 정보 수신 거부(동의 철회)가 처리됐습니다. 앞으로 광고성 메일은 보내지 않습니다.' || E'\n\n'
              || '- 전송자: ' || v_brand || E'\n' || '- 처리 일자: ' || v_date || E'\n' || '- 처리 결과: 수신 거부' || E'\n\n'
@@ -1091,6 +1091,10 @@ begin
     'shares', (select count(*) from public.events where type = 'share' and created_at > v_since),
     'watermark_clicks', (select count(*) from public.events where type = 'watermark_click' and created_at > v_since),
     'leads', (select count(*) from public.leads where created_at > v_since),
+    -- Leads past their retention date that the daily purge has not deleted yet; above 0 for more
+    -- than a day means the purge is not running (PLAYBOOK §0).
+    'leads_overdue', (select count(*) from public.leads where delete_after < now()),
+    'retention_last_run', (select value from public.kv where key = 'retention_last_run'),
     'orders_paid', (select count(*) from public.orders where status = 'paid' and paid_at > v_since),
     'revenue_krw', (select coalesce(sum(amount), 0) from public.orders where status = 'paid' and paid_at > v_since),
     'orders_refunded', (select count(*) from public.orders where status = 'refunded' and refunded_at > v_since),
@@ -1127,6 +1131,31 @@ begin
   returning id into v_id;
   perform ops.log('add_content', jsonb_build_object('id', v_id, 'channel', p_channel));
   return v_id;
+end
+$$;
+
+-- ---------------------------------------------------------------- grants (Supabase only)
+
+-- supabase-app-role.sql's ALTER DEFAULT PRIVILEGES only covers tables created by the role that
+-- ran it, so the tables 004 added get explicit grants for the app role, and none for the REST API
+-- roles. The ops schema and the consent trigger function stay closed to them too. No-ops on PGlite.
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'app_user') then
+    grant select, insert, update, delete on public.generation_attempts, public.marketing_suppressions to app_user;
+    grant usage, select on sequence public.generation_attempts_id_seq to app_user;
+    -- 004 only created these policies when app_user already existed.
+    execute 'drop policy if exists app_all on public.generation_attempts';
+    execute 'create policy app_all on public.generation_attempts for all to app_user using (true) with check (true)';
+    execute 'drop policy if exists app_all on public.marketing_suppressions';
+    execute 'create policy app_all on public.marketing_suppressions for all to app_user using (true) with check (true)';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'anon') and exists (select 1 from pg_roles where rolname = 'authenticated') then
+    revoke all on public.generation_attempts, public.marketing_suppressions from anon, authenticated;
+    revoke all on sequence public.generation_attempts_id_seq from anon, authenticated;
+    revoke all on function public.workspaces_marketing_consent() from public, anon, authenticated;
+    revoke all on all functions in schema ops from public, anon, authenticated;
+  end if;
 end
 $$;
 

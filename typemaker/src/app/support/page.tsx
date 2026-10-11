@@ -10,7 +10,7 @@ export default function SupportPage() {
       <div className="stack-lg">
         <div className="stack">
           <h1 className="display" style={{ fontSize: 34 }}>무엇을 도와드릴까요?</h1>
-          <p className="muted">남겨 주시면 바로 자동 답변을 드리고, 담당자가 확인해 이어서 답변드려요.</p>
+          <p className="muted">남겨 주시면 AI가 먼저 답변하고, 환불·결제 취소·개인정보 삭제는 사람이 확인해요.</p>
         </div>
         <NewTicketForm />
         <div className="stack">

@@ -4,6 +4,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { applyMigrations } from "./pglite-migrate.mjs";
 
 const dir = path.join(process.cwd(), "ops", "house-tests");
 const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
@@ -23,9 +24,7 @@ if (process.argv.includes("--sql")) {
 const dataDir = process.env.PGLITE_DIR ?? path.join(process.cwd(), ".data", "pglite");
 mkdirSync(path.dirname(path.resolve(dataDir)), { recursive: true });
 const db = await PGlite.create(dataDir);
-for (const f of readdirSync(path.join(process.cwd(), "db", "migrations")).filter((x) => x.endsWith(".sql")).sort()) {
-  await db.exec(readFileSync(path.join(process.cwd(), "db", "migrations", f), "utf8"));
-}
+await applyMigrations(db);
 await db.query(`insert into kv (key, value) values ('app_url', $1) on conflict (key) do update set value = excluded.value`, [appUrl]);
 for (const f of files) {
   const content = readFileSync(path.join(dir, f), "utf8");

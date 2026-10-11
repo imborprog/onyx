@@ -1,4 +1,5 @@
 import { ImageResponse } from "next/og";
+import { readableInk } from "@/lib/color";
 import { appUrl, BRAND, PLAN_LIMITS } from "@/lib/config";
 import { getPublicTest } from "@/lib/repo";
 
@@ -29,25 +30,6 @@ async function loadFont(text: string): Promise<ArrayBuffer | null> {
   } catch {
     return null;
   }
-}
-
-// Same rule as the player's result card: dark or white text, whichever contrasts more (WCAG luminance).
-const DARK_INK = "#15172b";
-function channel(v: number): number {
-  const s = v / 255;
-  return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-}
-function luminance(hex: string): number | null {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
-  if (!m?.[1]) return null;
-  const n = parseInt(m[1], 16);
-  return 0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255);
-}
-function readableInk(bg: string): string {
-  const l = luminance(bg);
-  if (l === null) return "#ffffff";
-  const dark = luminance(DARK_INK) ?? 0;
-  return (l + 0.05) / (dark + 0.05) > 1.05 / (l + 0.05) ? DARK_INK : "#ffffff";
 }
 
 /** Cuts to `max` characters (by code point) with an ellipsis. Line clamping below is the second guard. */

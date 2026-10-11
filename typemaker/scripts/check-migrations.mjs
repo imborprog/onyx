@@ -1,10 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
-import { readFileSync, readdirSync } from "node:fs";
+import { applyMigrations } from "./pglite-migrate.mjs";
 const db = new PGlite();
-for (const f of readdirSync("db/migrations").filter((f) => f.endsWith(".sql")).sort()) {
-  await db.exec(readFileSync(`db/migrations/${f}`, "utf8"));
-  console.log("applied", f);
-}
+for (const f of await applyMigrations(db)) console.log("applied", f);
 const content = {
   title: "t", subtitle: "", intro: "",
   questions: [1, 2, 3].map((i) => ({ id: `q${i}`, text: `q${i}`, options: [

@@ -1,8 +1,9 @@
 import "server-only";
-import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 import type { ConnectionOptions } from "node:tls";
 import type { Pool, PoolClient } from "pg";
+import { applyMigrations } from "./migrate";
 
 // One query interface over two backends: Postgres (Supabase, via DATABASE_URL)
 // in production and an in-process PGlite database for local dev and tests.
@@ -35,10 +36,7 @@ async function createPglite(): Promise<Db> {
   const dataDir = process.env.PGLITE_DIR ?? path.join(process.cwd(), ".data", "pglite");
   if (dataDir !== ":memory:") mkdirSync(path.dirname(dataDir), { recursive: true });
   const pg = (await PGlite.create(dataDir === ":memory:" ? undefined : dataDir)) as unknown as PgliteLike;
-  const files = readdirSync(migrationsDir()).filter((f) => f.endsWith(".sql")).sort();
-  for (const f of files) {
-    await pg.exec(readFileSync(path.join(migrationsDir(), f), "utf8"));
-  }
+  await applyMigrations(pg, migrationsDir());
   return {
     async query<T>(sql: string, params: SqlParam[] = []) {
       return (await pg.query<T>(sql, params)).rows;
