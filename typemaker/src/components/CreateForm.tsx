@@ -168,7 +168,7 @@ export default function CreateForm({ aiEnabled }: { aiEnabled: boolean }) {
       <div className="card stack">
         {known.length > 0 ? (
           <div className="field">
-            <label htmlFor="ws-target">만들 곳</label>
+            <label htmlFor="ws-target">저장할 워크스페이스</label>
             <select id="ws-target" className="select" value={target} onChange={(e) => setTarget(e.target.value)}>
               {known.map((w) => <option key={w.secret} value={w.secret}>{workspaceLabel(w)}</option>)}
               <option value="new">새 워크스페이스 만들기</option>

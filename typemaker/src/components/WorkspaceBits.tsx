@@ -82,6 +82,8 @@ export function maskEmail(email: string): string {
  */
 export function RememberWorkspace({ secret, brandName, email }: { secret: string; brandName: string | null; email: string | null }) {
   const [current, setCurrent] = useState<KnownWorkspace | null>(null);
+  // This browser already switched to this workspace once, so it is the person's own: a short note is enough.
+  const [familiar, setFamiliar] = useState(false);
   const [switched, setSwitched] = useState(false);
   const label = brandName?.trim() || (email ? maskEmail(email) : "");
 
@@ -94,7 +96,9 @@ export function RememberWorkspace({ secret, brandName, email }: { secret: string
       return;
     }
     // Already known here (the person switched to it before): keep its label fresh, still don't switch.
-    if (readKnown().some((w) => w.secret === secret)) rememberWorkspace(secret, label);
+    const known = readKnown().some((w) => w.secret === secret);
+    if (known) rememberWorkspace(secret, label);
+    setFamiliar(known);
     let dismissed = false;
     try {
       dismissed = window.sessionStorage.getItem(DISMISS_KEY) === secret;
@@ -106,6 +110,19 @@ export function RememberWorkspace({ secret, brandName, email }: { secret: string
 
   if (switched) return <div className="notice" role="status">이 브라우저의 &lsquo;내 테스트&rsquo;가 이제 이 워크스페이스로 열려요. 이전 워크스페이스는 테스트 만들기 화면에서 고를 수 있어요.</div>;
   if (!current) return null;
+  const makeDefault = () => {
+    switchWorkspace(secret, label);
+    setCurrent(null);
+    setSwitched(true);
+  };
+  if (familiar) {
+    return (
+      <div className="notice row between" role="status" style={{ gap: 8 }}>
+        <span className="small">지금 &lsquo;내 테스트&rsquo;와 새 테스트 만들기는 {workspaceLabel(current)}로 연결돼요.</span>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={makeDefault}>이 워크스페이스를 기본으로</button>
+      </div>
+    );
+  }
   return (
     <div className="notice stack" role="status" style={{ gap: 8 }}>
       <b>이 브라우저에는 다른 워크스페이스가 저장돼 있어요: {workspaceLabel(current)}</b>
@@ -114,7 +131,7 @@ export function RememberWorkspace({ secret, brandName, email }: { secret: string
         다른 사람에게 받은 링크라면 바꾸지 마세요. 내가 만든 테스트와 결제가 그 사람의 워크스페이스로 들어가요.
       </span>
       <div className="row" style={{ gap: 8 }}>
-        <button type="button" className="btn btn-dark btn-sm" onClick={() => { switchWorkspace(secret, label); setCurrent(null); setSwitched(true); }}>이 워크스페이스를 기본으로 쓰기</button>
+        <button type="button" className="btn btn-dark btn-sm" onClick={makeDefault}>이 워크스페이스를 기본으로 쓰기</button>
         <button
           type="button"
           className="btn btn-ghost btn-sm"
